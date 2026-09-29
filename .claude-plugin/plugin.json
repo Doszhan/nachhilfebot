@@ -1,0 +1,21 @@
+{
+  "name": "nachhilfebot",
+  "displayName": "NachhilfeBot",
+  "description": "Claude Code plugin for learning a language. Python handles scheduling, scoring and progress, so the LLM only teaches and gives feedback, with short prompts and less drift.",
+  "version": "0.2.8",
+  "author": {
+    "name": "Doszhan Kalibek"
+  },
+  "homepage": "https://devoption.de",
+  "license": "MIT",
+  "keywords": [
+    "language-learning",
+    "fsrs",
+    "spaced-repetition",
+    "tutor"
+  ],
+  "repository": "https://github.com/doszhan/nachhilfebot",
+  "privacyPolicyUrl": "https://github.com/doszhan/nachhilfebot/blob/main/PRIVACY.md",
+  "supportUrl": "https://github.com/doszhan/nachhilfebot/issues",
+  "documentationUrl": "https://github.com/doszhan/nachhilfebot#readme"
+}

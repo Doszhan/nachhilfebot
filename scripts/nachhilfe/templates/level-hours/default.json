@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "note": "Generic, approximate CEFR classroom-hour estimates, not specific to this language. Edit via /nachhilfe-config or by hand once you have better numbers for this language.",
+  "transitions": {
+    "0->A1": 100,
+    "A1->A2": 100,
+    "A2->B1": 180,
+    "B1->B2": 180,
+    "B2->C1": 200,
+    "C1->C2": 200
+  }
+}

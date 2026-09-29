@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "note": "Goethe-Institut-style course-hour estimates as provided by the learner. C1->C2 has a documented minimum of 75 hours if the full 150 isn't available.",
+  "transitions": {
+    "0->A1": 105,
+    "A1->A2": 100,
+    "A2->B1": 170,
+    "B1->B2": 150,
+    "B2->C1": 150,
+    "C1->C2": 150
+  }
+}

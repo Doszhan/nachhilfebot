@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "note": "No pre-built grammar taxonomy for this language yet. Ask the model to propose CEFR-appropriate topics per level during a /nachhilfe-grammar session and save the list here by hand, or edit this file directly.",
+  "topics": {
+    "A1": [],
+    "A2": [],
+    "B1": [],
+    "B2": [],
+    "C1": [],
+    "C2": []
+  },
+  "mistake_counts": {}
+}

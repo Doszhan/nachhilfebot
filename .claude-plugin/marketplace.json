@@ -1,0 +1,22 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "doszhan",
+  "description": "Plugins by Doszhan Kalibek (devoption.de).",
+  "owner": {
+    "name": "Doszhan Kalibek"
+  },
+  "plugins": [
+    {
+      "name": "nachhilfebot",
+      "source": "./",
+      "description": "Claude Code plugin for learning a language. Python handles scheduling, scoring and progress, so the LLM only teaches and gives feedback, with short prompts and less drift.",
+      "category": "education",
+      "tags": [
+        "language-learning",
+        "german",
+        "spaced-repetition",
+        "tutor"
+      ]
+    }
+  ]
+}

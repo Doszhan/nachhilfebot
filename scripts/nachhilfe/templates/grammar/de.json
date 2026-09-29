@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "note": "Starting taxonomy of standard German CEFR grammar topics per level. Edit this file directly to add/rename/reorganize topics; /nachhilfe-grammar and /nachhilfe-writing tag mistakes against these exact strings.",
+  "topics": {
+    "A1": [
+      "Präsens (regelmäßige Verben)",
+      "Konjugation von sein und haben",
+      "Bestimmter/unbestimmter Artikel",
+      "Personalpronomen (Nominativ)",
+      "Possessivartikel",
+      "Negation (nicht/kein)",
+      "W-Fragen und Ja/Nein-Fragen",
+      "Modalverben im Präsens (können, müssen, wollen, ...)",
+      "Akkusativ",
+      "Plural der Nomen",
+      "Imperativ",
+      "Präpositionen mit Akkusativ (einfach: in, um)"
+    ],
+    "A2": [
+      "Perfekt (regelmäßige/unregelmäßige Verben)",
+      "Präteritum von sein/haben/Modalverben",
+      "Dativ",
+      "Präpositionen mit Dativ",
+      "Wechselpräpositionen (Akkusativ/Dativ)",
+      "Trennbare Verben",
+      "Komparativ und Superlativ",
+      "Nebensätze mit weil/dass/wenn",
+      "Reflexive Verben",
+      "Possessivpronomen (alle Kasus)",
+      "Adjektivdeklination (Grundlagen)"
+    ],
+    "B1": [
+      "Präteritum (alle Verben)",
+      "Konjunktiv II (Höflichkeit, irreale Bedingungssätze)",
+      "Passiv (Präsens/Präteritum)",
+      "Relativsätze",
+      "Genitiv",
+      "Temporalsätze (als/wenn/während/nachdem)",
+      "Kausalsätze (weil/da/denn)",
+      "Konzessivsätze (obwohl)",
+      "Finalsätze (damit/um...zu)",
+      "Indirekte Fragesätze",
+      "Adjektivdeklination (vollständig)"
+    ],
+    "B2": [
+      "Konjunktiv I (indirekte Rede)",
+      "Passiv mit Modalverben",
+      "Nominalisierung",
+      "Erweiterte Partizipialattribute",
+      "Doppelkonjunktionen (je...desto, sowohl...als auch)",
+      "Infinitivkonstruktionen (um...zu, ohne...zu, statt...zu)",
+      "Relativsätze mit Präposition",
+      "Konnektoren zur Textkohärenz (dennoch, folglich, allerdings)"
+    ],
+    "C1": [
+      "Konjunktiv II der Vergangenheit (Irrealis)",
+      "Erweiterte Partizipialkonstruktionen",
+      "Komplexe Passivkonstruktionen",
+      "Nominaler Stil",
+      "Feste Verb-Präposition-Verbindungen (Rektion)",
+      "Subtile Konnektoren (mithin, gleichwohl, insofern)",
+      "Satzverbindung auf Textebene"
+    ],
+    "C2": [
+      "Idiomatische Wendungen und Redewendungen",
+      "Registerunterschiede (Umgangssprache vs. gehobene Sprache)",
+      "Mehrfache Unterordnung in Satzgefügen",
+      "Rhetorische und ironische Sprachmittel",
+      "Feine semantische Unterschiede bei Synonymen"
+    ]
+  },
+  "mistake_counts": {}
+}
