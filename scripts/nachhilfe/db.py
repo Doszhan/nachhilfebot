@@ -111,6 +111,24 @@ def save_db(name: str, data: dict, lang: str | None = None) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def load_optional(name: str, default: dict, lang: str | None = None) -> dict:
+    """Like `load_db`, but a missing file yields `default` instead of an error.
+
+    Used for files that older installs don't have yet (translate stats) or
+    that only exist while a session is open (retry list, translate session).
+    """
+    path = db_path(name, lang)
+    if not path.exists():
+        return json.loads(json.dumps(default))  # deep copy, never share the caller's dict
+    return json.loads(path.read_text())
+
+
+def delete_db(name: str, lang: str | None = None) -> None:
+    path = db_path(name, lang)
+    if path.exists():
+        path.unlink()
+
+
 def _copy_language_template(subdir: str, lang: str, dest_name: str, dest_dir: Path) -> None:
     src = TEMPLATES_DIR / subdir / f"{lang}.json"
     if not src.exists():

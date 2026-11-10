@@ -17,6 +17,15 @@ level changes what's *expected* in the task and the text, not this rubric.
 Sum the four sub-scores for the final score out of 10. Always show the
 sub-scores, not just the total, so the learner sees *why*.
 
+## Translation (`/nachhilfe-translate`) — score out of 10
+
+Each sentence gets one verdict: `correct` (meaning and grammar right, every
+target word present and spelled correctly, alternative wording allowed),
+`partial` (understandable but with errors, or a target word missing or
+misspelled) or `wrong` (meaning lost or serious errors). The plugin computes
+`(correct + 0.5 × partial) / answered × 10`; the model never does the
+arithmetic. Grammar mistakes use the same tagging rules as below.
+
 ## Reading comprehension — score as % correct
 
 Grade each question right/wrong (partial credit only for genuinely

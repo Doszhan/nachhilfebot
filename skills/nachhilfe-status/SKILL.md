@@ -1,6 +1,6 @@
 ---
 name: nachhilfe-status
-description: Show the learner's current progress toward their aim level, current streak, recent sessions, and per-discipline performance (vocabulary mastery breakdown, reading/writing/grammar score trends). Use when the learner asks "how am I doing", "show my progress", "status", "what's my streak", or invokes /nachhilfe-status. Read-only, safe to auto-invoke.
+description: Show the learner's current progress toward their aim level, current streak, recent sessions, and per-discipline performance (vocabulary mastery breakdown, reading/writing/grammar/translate score trends). Use when the learner asks "how am I doing", "show my progress", "status", "what's my streak", or invokes /nachhilfe-status. Read-only, safe to auto-invoke.
 disable-model-invocation: false
 ---
 
@@ -47,11 +47,14 @@ If it errors because no profile exists yet, tell the learner to run
    `grammar.weak_topics` (topic name + mistake count) as a short "topics to
    work on" list — mention these are candidates for `/nachhilfe-grammar`'s
    weak-topic mode.
+9. **Translation** — same shape as writing, using `translate.average_last_5`
+   and `translate.history` (score out of 10, computed by the plugin from the
+   correct/partial/wrong verdicts of `/nachhilfe-translate`).
 
 If a discipline has no sessions yet (`average_last_5` is `null`, `history`
 is empty), say so plainly rather than showing an empty table.
 
-9. **Available commands** — end every `/nachhilfe-status` report with a
+10. **Available commands** — end every `/nachhilfe-status` report with a
    list of all plugin commands and a one-line description of each:
 
    - `/nachhilfe-init` — set up or reconfigure a learner profile (native
@@ -66,5 +69,7 @@ is empty), say so plainly rather than showing an empty table.
      comprehension questions, scored as a percentage.
    - `/nachhilfe-grammar` — grammar practice, either a random topic or one
      targeting past mistakes.
+   - `/nachhilfe-translate` — translate sentences from your native language,
+     built around the words and grammar topics you fail most.
    - `/nachhilfe-config` — view or change settings (hours per level
      transition, FSRS mastery thresholds).

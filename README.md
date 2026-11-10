@@ -4,8 +4,9 @@ A Claude Code plugin for learning a language. Python handles scheduling,
 scoring and progress, so the LLM only teaches and gives feedback, with short
 prompts and less drift.
 
-It offers FSRS-scheduled vocabulary drills, exam-style
-writing/reading/grammar practice, and a progress dashboard. Every number
+It offers FSRS-scheduled vocabulary drills (with an end-of-session retry
+round), exam-style writing/reading/grammar practice, translation exercises
+built around your weakest words and grammar topics, and a progress dashboard. Every number
 (streaks, hour totals, FSRS scheduling, score averages) is computed by a
 small vendored Python backend instead of estimated by the model, and each
 command's prompt stays short so the model stays focused on what only it can
@@ -53,11 +54,12 @@ To install from a local clone instead of GitHub, pass its path:
 | Command | What it does |
 |---|---|
 | `/nachhilfe-init` | Set up your profile: native/target language, current & aim CEFR level, timeframe. |
-| `/nachhilfe-status` | Progress bar to your aim level, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar score trends. |
-| `/nachhilfe-vocab` | FSRS-scheduled vocabulary review (native language → target language). |
+| `/nachhilfe-status` | Progress bar to your aim level, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar/translate score trends. |
+| `/nachhilfe-vocab` | FSRS-scheduled vocabulary review (native language → target language). Words you got wrong or only barely right are asked again at the end of the session; that retry round never changes the schedule. |
 | `/nachhilfe-writing` | Exam-style writing task, graded against `RUBRIC.md`. |
 | `/nachhilfe-reading` | Level-appropriate reading text with comprehension questions, scored as % correct. |
 | `/nachhilfe-grammar` | Practice a random topic at your level, or your weakest topic by mistake count. |
+| `/nachhilfe-translate` | Translate sentences from your native language into the target language. The plugin picks the words and grammar topics you fail most; code validates the sentences, matches your answers against the required words and scores the session. |
 | `/nachhilfe-config` | Edit hour-per-level-transition estimates or FSRS mastery thresholds. |
 
 If a bare `/nachhilfe-init` doesn't resolve on your Claude Code version,
@@ -82,6 +84,9 @@ missing) data; there's no cross-directory memory by design.
     profile.json                 # native/target language, levels, target date
     status.json                   # append-only session log (all types)
     vocab.json                     # FSRS card states
+    vocab-session.json              # today's retry list (exists only during a vocab session)
+    translate.json                   # per-word translate stats and the translate source language
+    translate-session.json            # the open translate session (deleted when it is finished)
     reading.json / writing.json     # rubric version + topics already used
     grammar.json                     # grammar topic taxonomy + mistake counts
     level-hours.json                  # hours needed per CEFR transition (editable)
@@ -95,12 +100,35 @@ your learning history committed there.
 
 Writing/reading sessions store the topic, score, and minutes — not the full
 submitted text or generated content — to keep the database small and avoid
-retaining potentially sensitive writing long-term.
+retaining potentially sensitive writing long-term. Translate sessions keep
+your typed answers only while the session is open; `translate-finish` deletes
+them and keeps just the score, the mistake tags and per-word hit/miss counts.
 
 ## Privacy
 
 Everything stays on your machine: no network requests, no telemetry. See
 [PRIVACY.md](PRIVACY.md) for what the plugin stores and runs.
+
+## Translate and retry: how code and model split the work
+
+Both features follow the same rule: **code decides and verifies, the model
+writes and explains.**
+
+* **Retry round** (`/nachhilfe-vocab`): the plugin records every card rated
+  `again`/`hard`, hands the list back after the last card, caps retries at two
+  attempts per card, and refuses to touch FSRS state while doing so.
+* **Translate** (`/nachhilfe-translate`): the plugin ranks your cards by
+  lapses (again/hard ratings), earlier translation misses and FSRS stability, and
+  your grammar topics by mistake count (at most half of a session on one
+  topic), then plans each sentence. The model writes the sentences and the
+  reference translations; the plugin rejects them unless every target word
+  occurs in the reference and the requested construction is visible. Your
+  answer is matched word by word against the required words (exact / umlaut /
+  similar / missing), which pinpoints wrong prepositions, missing reflexive
+  pronouns and misspellings without a model. The model judges whatever the
+  matching can't (alternative wording, grammar errors) inside guard rails:
+  `correct` is refused while a target word is missing, and mistake tags must
+  be exact grammar-topic strings. Score and statistics are computed in code.
 
 ## Design principles
 
@@ -132,6 +160,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 Covers `fsrs.py` (FSRS state transitions, rating ordering, mastery
 buckets), `progress.py` (streaks, hour math, rolling averages, score
-rollups), and a round-trip `db.py`/`cli.py` integration test that `chdir`s
+rollups), `retry.py` (retry list rules), `translate.py` (target selection,
+sentence validation, answer matching, scoring), and a round-trip `db.py`/`cli.py` integration test that `chdir`s
 into a temp directory (the data root always resolves to `<cwd>/nachhilfe`)
 — never touches your real data location.

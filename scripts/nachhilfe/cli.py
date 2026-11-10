@@ -12,11 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 
-from . import db, progress
+from . import db, progress, retry, translate
 from .fsrs import Card, RATING_NAMES
 from .fsrs import review as fsrs_review
 
@@ -37,6 +38,13 @@ def _is_inside_git_repo(path: Path) -> bool:
 
 def _print(data) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+
+
+def _is_due(card: dict, today: date) -> bool:
+    """Due today (or never reviewed), and not hidden with `vocab-suppress`."""
+    if card.get("suppressed"):
+        return False
+    return card["state"] == "new" or bool(card.get("due") and date.fromisoformat(card["due"]) <= today)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -119,6 +127,10 @@ def cmd_status(args: argparse.Namespace) -> None:
             "history": progress.score_history_table(sessions, "grammar"),
             "weak_topics": progress.weak_grammar_topics(grammar.get("mistake_counts", {})),
         },
+        "translate": {
+            "average_last_5": progress.rolling_average(sessions, "translate", 5),
+            "history": progress.score_history_table(sessions, "translate"),
+        },
     }
     _print(report)
 
@@ -136,11 +148,7 @@ def cmd_session_start_banner(args: argparse.Namespace) -> None:
     today = date.today()
 
     streak = progress.compute_streak(status["sessions"], today)
-    due = sum(
-        1
-        for c in vocab["cards"]
-        if c["state"] == "new" or (c.get("due") and date.fromisoformat(c["due"]) <= today)
-    )
+    due = sum(1 for c in vocab["cards"] if _is_due(c, today))
 
     lines = [
         f"[nachhilfebot] Learning: {profile['target_language']} "
@@ -183,11 +191,7 @@ def cmd_vocab_due(args: argparse.Namespace) -> None:
     lang = args.lang or db.active_language()
     vocab = db.load_db("vocab", lang)
     today = date.today()
-    due = [
-        c
-        for c in vocab["cards"]
-        if c["state"] == "new" or (c.get("due") and date.fromisoformat(c["due"]) <= today)
-    ]
+    due = [c for c in vocab["cards"] if _is_due(c, today)]
     due.sort(key=lambda c: (c["state"] != "new", c.get("due") or ""))
     _print([{"id": c["id"], "native_word": c["native_word"], "level": c.get("level")} for c in due[: args.limit]])
 
@@ -231,7 +235,13 @@ def cmd_vocab_review(args: argparse.Namespace) -> None:
             due=date.fromisoformat(c["due"]) if c["due"] else None,
             state=c["state"],
         )
+        was_learned = card.state != "new"
         fsrs_review(card, RATING_NAMES[args.rating], today)
+        if args.rating == "hard" and was_learned:
+            # Same rule as `again` (a first look is never a lapse). Scheduling is
+            # untouched: fsrs.py never reads `lapses`; the counter just also
+            # records "right, but with a real error", so such words show up as weak.
+            card.lapses += 1
         c.update(
             {
                 "difficulty": round(card.difficulty, 4),
@@ -244,34 +254,118 @@ def cmd_vocab_review(args: argparse.Namespace) -> None:
             }
         )
         db.save_db("vocab", vocab, lang)
+
+        if args.rating in retry.RETRY_RATINGS:
+            state = db.load_optional(retry.STATE_NAME, retry.empty_state(today), lang)
+            state = retry.record_failure(state, c["id"], args.rating, today)
+            db.save_db(retry.STATE_NAME, state, lang)
+
         _print(c)
         return
     raise SystemExit(f"No such card id: {args.card_id}")
 
 
-def cmd_session_log(args: argparse.Namespace) -> None:
+def cmd_vocab_retry_list(args: argparse.Namespace) -> None:
+    """Cards rated again/hard in today's session that still need a retry.
+
+    Only the native-language side is returned, like `vocab-due`.
+    """
     lang = args.lang or db.active_language()
+    vocab = db.load_db("vocab", lang)
+    today = date.today()
+    state = db.load_optional(retry.STATE_NAME, retry.empty_state(today), lang)
+    by_id = {c["id"]: c for c in vocab["cards"]}
+    pending = [
+        {
+            "id": row["id"],
+            "native_word": by_id[row["id"]]["native_word"],
+            "level": by_id[row["id"]].get("level"),
+            "rating": row["rating"],
+            "attempts": row["attempts"],
+        }
+        for row in retry.pending(state, today, args.max_attempts)
+        if row["id"] in by_id
+    ]
+    _print({**retry.counts(state, today), "pending": pending})
+
+
+def cmd_vocab_retry_record(args: argparse.Namespace) -> None:
+    """Record the outcome of one retry question. Never touches FSRS state."""
+    lang = args.lang or db.active_language()
+    today = date.today()
+    state = db.load_optional(retry.STATE_NAME, retry.empty_state(today), lang)
+    try:
+        state = retry.record_attempt(state, args.card_id, args.result == "correct", today)
+    except KeyError:
+        raise SystemExit(f"Card {args.card_id} is not in today's retry list.")
+    db.save_db(retry.STATE_NAME, state, lang)
+    entry = state["failed"][args.card_id]
+    _print(
+        {
+            "card_id": args.card_id,
+            "attempts": entry["attempts"],
+            "fixed": entry["fixed"],
+            "remaining": len(retry.pending(state, today, args.max_attempts)),
+        }
+    )
+
+
+def cmd_vocab_suppress(args: argparse.Namespace) -> None:
+    """Hide a flawed or duplicate card from review and translate practice."""
+    lang = args.lang or db.active_language()
+    vocab = db.load_db("vocab", lang)
+    for c in vocab["cards"]:
+        if c["id"] == args.card_id:
+            if args.undo:
+                c.pop("suppressed", None)
+            else:
+                c["suppressed"] = True
+            db.save_db("vocab", vocab, lang)
+            _print(c)
+            return
+    raise SystemExit(f"No such card id: {args.card_id}")
+
+
+def _append_session(
+    lang: str,
+    session_type: str,
+    minutes: int,
+    score: float | None,
+    topic: str | None,
+    mistakes: list[str],
+    session_date: str | None = None,
+) -> dict:
+    """Append to the session log and fold grammar mistake tags into the counts."""
     status = db.load_db("status", lang)
     session = {
         "id": str(uuid.uuid4())[:8],
-        "date": args.date or date.today().isoformat(),
+        "date": session_date or date.today().isoformat(),
         "logged_at": datetime.now().isoformat(timespec="seconds"),
-        "type": args.type,
-        "minutes": args.minutes,
-        "score": args.score,
-        "topic": args.topic,
-        "mistakes": args.mistake or [],
+        "type": session_type,
+        "minutes": minutes,
+        "score": score,
+        "topic": topic,
+        "mistakes": mistakes,
     }
     status["sessions"].append(session)
     db.save_db("status", status, lang)
 
-    if session["mistakes"]:
+    if mistakes:
         grammar = db.load_db("grammar", lang)
         counts = grammar.setdefault("mistake_counts", {})
-        for topic in session["mistakes"]:
-            counts[topic] = counts.get(topic, 0) + 1
+        for tag in mistakes:
+            counts[tag] = counts.get(tag, 0) + 1
         db.save_db("grammar", grammar, lang)
+    return session
 
+
+def cmd_session_log(args: argparse.Namespace) -> None:
+    lang = args.lang or db.active_language()
+    session = _append_session(
+        lang, args.type, args.minutes, args.score, args.topic, args.mistake or [], args.date
+    )
+    if args.type == "vocab":
+        db.delete_db(retry.STATE_NAME, lang)  # the retry list belongs to this session
     _print(session)
 
 
@@ -287,6 +381,316 @@ def cmd_grammar_weak(args: argparse.Namespace) -> None:
     lang = args.lang or db.active_language()
     grammar = db.load_db("grammar", lang)
     _print(progress.weak_grammar_topics(grammar.get("mistake_counts", {}), args.limit))
+
+
+# ---------------------------------------------------------------- translate
+
+TRANSLATE_DB = "translate"
+TRANSLATE_SESSION = "translate-session"
+_TRANSLATE_DEFAULT = {"schema_version": 1, "settings": {}, "cards": {}}
+
+
+def _translate_state(lang: str) -> dict:
+    return db.load_optional(TRANSLATE_DB, _TRANSLATE_DEFAULT, lang)
+
+
+def _open_translate_session(lang: str) -> dict:
+    session = db.load_optional(TRANSLATE_SESSION, {}, lang)
+    if not session:
+        raise SystemExit("No translate session is open. Run translate-start first.")
+    return session
+
+
+def _all_grammar_topics(grammar: dict) -> set[str]:
+    return {t for topics in grammar.get("topics", {}).values() for t in topics}
+
+
+def _read_stdin_or(value: str | None, what: str) -> str:
+    text = value if value is not None else sys.stdin.read()
+    if not text.strip():
+        raise SystemExit(f"Empty {what}.")
+    return text
+
+
+def cmd_translate_config(args: argparse.Namespace) -> None:
+    lang = args.lang or db.active_language()
+    profile = db.load_db("profile", lang)
+    state = _translate_state(lang)
+    if args.source_language:
+        state["settings"]["source_language"] = args.source_language
+        db.save_db(TRANSLATE_DB, state, lang)
+    _print(
+        {
+            "source_language": state["settings"].get("source_language"),
+            "default_source_language": profile["native_languages"][0],
+            "native_languages": profile["native_languages"],
+        }
+    )
+
+
+def cmd_translate_start(args: argparse.Namespace) -> None:
+    lang = args.lang or db.active_language()
+    today = date.today()
+
+    existing = db.load_optional(TRANSLATE_SESSION, {}, lang)
+    if existing and existing.get("date") == today.isoformat() and not (args.new or args.preview):
+        _print(
+            {
+                "resumed": True,
+                "source_language": existing["source_language"],
+                "level": existing["level"],
+                "slots": existing["slots"],
+                "sentences_submitted": bool(existing.get("sentences")),
+                "recorded": sorted(int(n) for n in existing.get("results", {})),
+            }
+        )
+        return
+
+    profile = db.load_db("profile", lang)
+    vocab = db.load_db("vocab", lang)
+    grammar = db.load_db("grammar", lang)
+    state = _translate_state(lang)
+    level = profile["current_level"]
+    source_language = (
+        args.source_language
+        or state["settings"].get("source_language")
+        or profile["native_languages"][0]
+    )
+    try:
+        slots = translate.build_slots(
+            vocab["cards"],
+            state["cards"],
+            grammar.get("mistake_counts", {}),
+            grammar.get("topics", {}).get(level, []),
+            lang,
+            today,
+            count=args.count,
+            per_sentence=args.per_sentence,
+            seed=args.seed,
+        )
+    except ValueError as err:
+        raise SystemExit(str(err))
+
+    session = {
+        "schema_version": 1,
+        "date": today.isoformat(),
+        "source_language": source_language,
+        "level": level,
+        "slots": slots,
+        "sentences": {},
+        "answers": {},
+        "checks": {},
+        "results": {},
+    }
+    if not args.preview:
+        db.save_db(TRANSLATE_SESSION, session, lang)
+    _print(
+        {
+            "resumed": False,
+            "preview": args.preview,
+            "source_language": source_language,
+            "level": level,
+            "slots": slots,
+        }
+    )
+
+
+def cmd_translate_submit(args: argparse.Namespace) -> None:
+    """The model hands in the sentences it wrote (JSON on stdin); code validates them."""
+    lang = args.lang or db.active_language()
+    session = _open_translate_session(lang)
+    if session.get("answers"):
+        raise SystemExit("Answers were already collected; sentences can no longer be replaced.")
+    try:
+        submitted = json.loads(_read_stdin_or(args.json, "submission"))
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"Submission is not valid JSON: {err}")
+
+    errors = translate.validate_submission(session["slots"], submitted, lang)
+    if errors:
+        raise SystemExit("Sentences rejected - fix and resubmit all of them:\n- " + "\n- ".join(errors))
+
+    session["sentences"] = {
+        str(item["n"]): {
+            "source": item["source"].strip(),
+            "reference": item["reference"].strip(),
+            "keys": [
+                {"card_id": k["card_id"], "tokens": translate.key_tokens(k)} for k in item["keys"]
+            ],
+        }
+        for item in submitted
+    }
+    db.save_db(TRANSLATE_SESSION, session, lang)
+    _print({"accepted": len(session["sentences"])})
+
+
+def cmd_translate_next(args: argparse.Namespace) -> None:
+    """The next sentence to show the learner: only the source text, never the reference."""
+    lang = args.lang or db.active_language()
+    session = _open_translate_session(lang)
+    if not session.get("sentences"):
+        raise SystemExit("No sentences submitted yet. Run translate-submit first.")
+    total = len(session["slots"])
+    answered = len(session["results"])
+    for slot in session["slots"]:
+        n = str(slot["n"])
+        if n not in session["results"]:
+            _print(
+                {
+                    "done": False,
+                    "n": slot["n"],
+                    "total": total,
+                    "answered": answered,
+                    "source": session["sentences"][n]["source"],
+                    "already_checked": n in session["checks"],
+                }
+            )
+            return
+    _print({"done": True, "total": total, "answered": answered})
+
+
+def cmd_translate_check(args: argparse.Namespace) -> None:
+    lang = args.lang or db.active_language()
+    session = _open_translate_session(lang)
+    n = str(args.n)
+    if n not in session.get("sentences", {}):
+        raise SystemExit(f"No sentence {n} in this session.")
+    if n in session["results"]:
+        raise SystemExit(f"Sentence {n} already has a verdict.")
+    answer = _read_stdin_or(args.answer, "answer").strip()
+
+    slot = next(s for s in session["slots"] if str(s["n"]) == n)
+    sentence = session["sentences"][n]
+    result = translate.check_answer(answer, sentence, slot["grammar_topic"], lang)
+    session["answers"][n] = answer
+    session["checks"][n] = result
+    if result["exact_match"]:
+        session["results"][n] = {"verdict": "correct", "mistakes": [], "accepted": [], "auto": True}
+    db.save_db(TRANSLATE_SESSION, session, lang)
+    _print(
+        {
+            "n": args.n,
+            "reference": sentence["reference"],
+            "grammar_topic": slot["grammar_topic"],
+            **result,
+            "verdict_recorded": result["exact_match"],
+        }
+    )
+
+
+def cmd_translate_record(args: argparse.Namespace) -> None:
+    """Store the model's verdict for one sentence, within the code's guard rails."""
+    lang = args.lang or db.active_language()
+    session = _open_translate_session(lang)
+    n = str(args.n)
+    if n not in session["checks"]:
+        raise SystemExit(f"Run translate-check for sentence {n} first.")
+    if n in session["results"]:
+        raise SystemExit(f"Sentence {n} already has a verdict.")
+
+    grammar = db.load_db("grammar", lang)
+    known = _all_grammar_topics(grammar)
+    mistakes = args.mistake or []
+    unknown = [m for m in mistakes if m not in known]
+    if unknown:
+        raise SystemExit(
+            f"Unknown grammar topic tag(s): {unknown}. Use the exact strings from grammar-topics."
+        )
+
+    slot = next(s for s in session["slots"] if str(s["n"]) == n)
+    slot_ids = {c["id"] for c in slot["cards"]}
+    accepted = set(args.accept or [])
+    if not accepted <= slot_ids:
+        raise SystemExit(f"--accept ids must be target cards of sentence {n}: {sorted(slot_ids)}")
+
+    if args.verdict == "correct":
+        if mistakes:
+            raise SystemExit("A 'correct' verdict cannot carry mistake tags.")
+        unresolved = [
+            k["card_id"]
+            for k in session["checks"][n]["keys"]
+            if k["verdict"] != "ok" and k["card_id"] not in accepted
+        ]
+        if unresolved:
+            raise SystemExit(
+                f"Target word(s) {unresolved} were missing or misspelled in the answer, so "
+                "'correct' is not allowed. Use 'partial'/'wrong', or pass --accept <card_id> "
+                "if the learner used an equally valid expression."
+            )
+
+    session["results"][n] = {
+        "verdict": args.verdict,
+        "mistakes": mistakes,
+        "accepted": sorted(accepted),
+        "auto": False,
+    }
+    db.save_db(TRANSLATE_SESSION, session, lang)
+    _print({"n": args.n, "verdict": args.verdict, "answered": len(session["results"])})
+
+
+def cmd_translate_finish(args: argparse.Namespace) -> None:
+    """Score the session, update per-word stats, log it, and close it."""
+    lang = args.lang or db.active_language()
+    today = date.today()
+    session = _open_translate_session(lang)
+    results = session["results"]
+    open_ns = [s["n"] for s in session["slots"] if str(s["n"]) not in results]
+    if open_ns and not args.allow_partial:
+        raise SystemExit(
+            f"Sentences without a verdict: {open_ns}. Finish them, or pass --allow-partial."
+        )
+    if not results:
+        raise SystemExit("Nothing was answered; nothing to log.")
+
+    answered = [s for s in session["slots"] if str(s["n"]) in results]
+    verdicts = [results[str(s["n"])]["verdict"] for s in answered]
+    score = translate.score_out_of_10(verdicts)
+
+    vocab = db.load_db("vocab", lang)
+    by_id = {c["id"]: c for c in vocab["cards"]}
+    state = _translate_state(lang)
+    hit, missed, spelling = [], [], []
+    marker_missing: list[str] = []
+    mistakes: list[str] = []
+    for slot in answered:
+        n = str(slot["n"])
+        result = results[n]
+        check = session["checks"][n]
+        mistakes.extend(result["mistakes"])
+        if check["grammar_marker_found"] is False and slot["grammar_topic"]:
+            marker_missing.append(slot["grammar_topic"])
+        for key in check["keys"]:
+            outcome = translate.card_outcome(key, set(result["accepted"]))
+            translate.update_stats(state["cards"], key["card_id"], outcome, today)
+            entry = {"id": key["card_id"], "target_word": by_id[key["card_id"]]["target_word"], "n": slot["n"]}
+            {"hit": hit, "spelling": spelling, "miss": missed}[outcome].append(entry)
+    db.save_db(TRANSLATE_DB, state, lang)
+
+    logged = _append_session(
+        lang,
+        "translate",
+        args.minutes,
+        score,
+        f"Translation ({session['source_language']} -> {lang})",
+        mistakes,
+    )
+    db.delete_db(TRANSLATE_SESSION, lang)
+    _print(
+        {
+            "session": logged,
+            "score": score,
+            "answered": len(answered),
+            "total": len(session["slots"]),
+            "correct": verdicts.count("correct"),
+            "partial": verdicts.count("partial"),
+            "wrong": verdicts.count("wrong"),
+            "vocab_missed": missed,
+            "vocab_spelling": spelling,
+            "vocab_hit": hit,
+            "grammar_mistakes": [[t, mistakes.count(t)] for t in sorted(set(mistakes), key=lambda t: (-mistakes.count(t), t))],
+            "construction_possibly_avoided": sorted(set(marker_missing)),
+        }
+    )
 
 
 def cmd_config_get(args: argparse.Namespace) -> None:
@@ -360,9 +764,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rating", required=True, choices=list(RATING_NAMES))
     p.set_defaults(func=cmd_vocab_review)
 
+    p = sub.add_parser(
+        "vocab-retry-list",
+        help="cards rated again/hard in today's session that still need a retry (no FSRS)",
+    )
+    p.add_argument("--lang")
+    p.add_argument("--max-attempts", type=int, default=retry.DEFAULT_MAX_ATTEMPTS)
+    p.set_defaults(func=cmd_vocab_retry_list)
+
+    p = sub.add_parser(
+        "vocab-retry-record", help="record one retry answer; never changes FSRS state"
+    )
+    p.add_argument("--lang")
+    p.add_argument("--card-id", required=True)
+    p.add_argument("--result", required=True, choices=["correct", "wrong"])
+    p.add_argument("--max-attempts", type=int, default=retry.DEFAULT_MAX_ATTEMPTS)
+    p.set_defaults(func=cmd_vocab_retry_record)
+
+    p = sub.add_parser(
+        "vocab-suppress", help="hide a flawed/duplicate card from review and translate practice"
+    )
+    p.add_argument("--lang")
+    p.add_argument("--card-id", required=True)
+    p.add_argument("--undo", action="store_true", help="make the card active again")
+    p.set_defaults(func=cmd_vocab_suppress)
+
     p = sub.add_parser("session-log", help="log a completed session")
     p.add_argument("--lang")
-    p.add_argument("--type", required=True, choices=["vocab", "writing", "reading", "grammar"])
+    p.add_argument(
+        "--type", required=True, choices=["vocab", "writing", "reading", "grammar", "translate"]
+    )
     p.add_argument("--minutes", type=int, required=True)
     p.add_argument("--score", type=float)
     p.add_argument("--topic")
@@ -383,6 +814,61 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lang")
     p.add_argument("--limit", type=int, default=5)
     p.set_defaults(func=cmd_grammar_weak)
+
+    p = sub.add_parser("translate-config", help="show or set the translate source language")
+    p.add_argument("--lang")
+    p.add_argument("--source-language", help="language the sentences are written in, e.g. Russian")
+    p.set_defaults(func=cmd_translate_config)
+
+    p = sub.add_parser(
+        "translate-start",
+        help="plan a translate session: target words and grammar topics from your weak spots",
+    )
+    p.add_argument("--lang")
+    p.add_argument("--count", type=int, default=translate.DEFAULT_COUNT)
+    p.add_argument("--per-sentence", type=int, default=translate.DEFAULT_PER_SENTENCE)
+    p.add_argument("--source-language")
+    p.add_argument("--seed", type=int)
+    p.add_argument("--preview", action="store_true", help="show the plan without opening a session")
+    p.add_argument("--new", action="store_true", help="discard today's open session and start over")
+    p.set_defaults(func=cmd_translate_start)
+
+    p = sub.add_parser(
+        "translate-submit", help="hand in the generated sentences (JSON on stdin) for validation"
+    )
+    p.add_argument("--lang")
+    p.add_argument("--json", help="the JSON text; read from stdin when omitted")
+    p.set_defaults(func=cmd_translate_submit)
+
+    p = sub.add_parser("translate-next", help="the next source sentence to show the learner")
+    p.add_argument("--lang")
+    p.set_defaults(func=cmd_translate_next)
+
+    p = sub.add_parser(
+        "translate-check", help="compare the learner's answer (stdin) with the reference"
+    )
+    p.add_argument("--lang")
+    p.add_argument("--n", type=int, required=True)
+    p.add_argument("--answer", help="the answer text; read from stdin when omitted")
+    p.set_defaults(func=cmd_translate_check)
+
+    p = sub.add_parser("translate-record", help="store the verdict for one sentence")
+    p.add_argument("--lang")
+    p.add_argument("--n", type=int, required=True)
+    p.add_argument("--verdict", required=True, choices=list(translate.VERDICTS))
+    p.add_argument("--mistake", action="append", help="exact grammar-topic tag; repeat for several")
+    p.add_argument(
+        "--accept",
+        action="append",
+        help="card id whose word the learner replaced with an equally valid expression",
+    )
+    p.set_defaults(func=cmd_translate_record)
+
+    p = sub.add_parser("translate-finish", help="score, update stats, log and close the session")
+    p.add_argument("--lang")
+    p.add_argument("--minutes", type=int, required=True)
+    p.add_argument("--allow-partial", action="store_true")
+    p.set_defaults(func=cmd_translate_finish)
 
     p = sub.add_parser("config-get", help="read a config file")
     p.add_argument("--lang")

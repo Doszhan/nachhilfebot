@@ -9,7 +9,10 @@ Your profile, vocabulary cards, session log (date, time, type, minutes,
 score, topic, mistake tags) and settings are written as JSON files to a
 `nachhilfe/` folder inside the directory you start Claude Code from. Nothing
 is written anywhere else. Writing and reading sessions keep only the topic,
-score and minutes, not the text you submitted.
+score and minutes, not the text you submitted. During a
+translate session your typed answers are kept in the session file until you
+finish it; they are then deleted and only the score, mistake tags and
+per-word hit/miss counts remain.
 
 Delete the `nachhilfe/` folder to delete all of your data. Uninstalling the
 plugin never touches it.

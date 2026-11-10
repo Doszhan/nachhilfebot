@@ -88,11 +88,48 @@ For each card, one at a time:
    learner answers a card incorrectly, also show a correct example
    sentence using the target word before moving to the next card.
 
-## 5. Log the session
+## 5. Retry round (cards rated again or hard)
+
+When the last card is done, re-ask the cards that went badly. The plugin
+remembers them — you don't have to track which ones they were:
+
+```bash
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe vocab-retry-list
+```
+
+This returns `{"failed", "fixed", "pending": [{"id", "native_word", "level",
+"rating", "attempts"}]}`. If `pending` is empty, skip to step 6. Otherwise tell
+the learner in one line that a short retry round follows, then ask every
+pending card exactly like in step 4.1 (native word + level, same rules for
+nouns and verbs), one at a time.
+
+After each answer:
+
+1. Reveal the answer with `vocab-reveal`, judge it by the same standard as
+   before (right word, article/plural for nouns, `sich` and preposition for
+   verbs), and give one line of feedback. Show a correct example sentence
+   only if they got it wrong again.
+2. Record the outcome:
+
+   ```bash
+   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe vocab-retry-record --card-id "<id>" --result "<correct|wrong>"
+   ```
+
+**Never call `vocab-review` during the retry round.** This is a short memory
+rewind, not a new review: it must not change any card's schedule.
+
+When every pending card has been asked, run `vocab-retry-list` again. Cards
+answered wrong are offered once more (the plugin allows at most two attempts
+per card); keep going until `pending` is empty. Then mention in the session
+summary how many cards the retry round fixed (`fixed` out of `failed`, as
+reported by the last `vocab-retry-list`) and name the ones that are still
+shaky. If the learner asks to skip the retry round, skip it.
+
+## 6. Log the session
 
 Estimate the session's duration in minutes (a reasonable estimate based on
-number of cards and pace — a few minutes for a handful of cards, more for
-15+), then:
+number of cards and pace, including the retry round — a few minutes for a
+handful of cards, more for 15+), then:
 
 ```bash
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe session-log --type vocab --minutes <N>
