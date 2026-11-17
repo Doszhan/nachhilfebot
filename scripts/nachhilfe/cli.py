@@ -107,6 +107,7 @@ def cmd_status(args: argparse.Namespace) -> None:
             "hours_left": round(max(hours_needed - done, 0), 2),
             "bar": progress.progress_bar(done, hours_needed),
         },
+        "progress_chart": progress.progress_chart(sessions, profile.get("created_at"), today),
         "streak": progress.compute_streak(sessions, today),
         "last_sessions": progress.last_n_sessions(sessions, 10),
         "active_days": progress.active_days_table(sessions, 10),

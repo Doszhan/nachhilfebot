@@ -54,7 +54,7 @@ To install from a local clone instead of GitHub, pass its path:
 | Command | What it does |
 |---|---|
 | `/nachhilfe-init` | Set up your profile: native/target language, current & aim CEFR level, timeframe. |
-| `/nachhilfe-status` | Progress bar to your aim level, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar/translate score trends. |
+| `/nachhilfe-status` | Progress bar to your aim level with a line chart of your total study hours since day one, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar/translate score trends. |
 | `/nachhilfe-vocab` | FSRS-scheduled vocabulary review (native language → target language). Words you got wrong or only barely right are asked again at the end of the session; that retry round never changes the schedule. |
 | `/nachhilfe-writing` | Exam-style writing task, graded against `RUBRIC.md`. |
 | `/nachhilfe-reading` | Level-appropriate reading text with comprehension questions, scored as % correct. |

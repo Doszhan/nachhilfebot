@@ -173,3 +173,72 @@ def test_weak_grammar_topics_sorted_descending_and_limited():
 
 def test_weak_grammar_topics_empty_when_no_mistakes():
     assert progress.weak_grammar_topics({}) == []
+
+
+# ------------------------------------------------------------ study-time chart
+
+def _session(day: str, minutes: int) -> dict:
+    return {"date": day, "type": "vocab", "minutes": minutes}
+
+
+def test_cumulative_hours_starts_at_zero_and_adds_each_day():
+    sessions = [_session("2026-11-01", 30), _session("2026-11-01", 30), _session("2026-11-03", 60)]
+    series = progress.cumulative_hours(sessions, date(2026, 11, 1), date(2026, 11, 4))
+    assert series == [0.0, 1.0, 1.0, 2.0, 2.0]  # zero point + one value per day
+
+
+def test_chart_starts_at_zero_and_its_top_is_the_total():
+    sessions = [_session("2026-11-01", 60), _session("2026-11-05", 120)]
+    chart = progress.progress_chart(sessions, "2026-11-01", date(2026, 11, 6))
+    lines = chart["lines"]
+    assert chart["total_hours"] == 3.0
+    assert chart["days"] == 6
+    assert lines[0].startswith("3.0h ┤")
+    assert lines[progress.CHART_HEIGHT - 1].lstrip().startswith("0h ┤─")  # bottom row: line starts at 0
+    assert lines[0].rstrip().endswith(("╭", "─"))  # the line ends in the top row
+    assert len(lines) == progress.CHART_HEIGHT + 2  # rows, x axis, dates
+
+
+def _columns(chart: dict) -> list[str]:
+    """The plot area of a chart, one string per column, top row first."""
+    rows = chart["lines"][: progress.CHART_HEIGHT]
+    offset = rows[0].index("┤") + 1
+    width = max(len(r) for r in rows) - offset
+    return ["".join(r[offset + x] if offset + x < len(r) else " " for r in rows) for x in range(width)]
+
+
+def test_chart_never_falls():
+    sessions = [_session("2026-11-01", 10), _session("2026-11-02", 90), _session("2026-11-09", 5)]
+    chart = progress.progress_chart(sessions, "2026-11-01", date(2026, 11, 10))
+    # the highest drawn cell of each column; a smaller index is higher up
+    tops = [min(i for i, ch in enumerate(col) if ch != " ") for col in _columns(chart)]
+    assert tops == sorted(tops, reverse=True)
+
+
+def test_chart_includes_sessions_before_the_profile_date():
+    chart = progress.progress_chart([_session("2026-10-20", 60)], "2026-11-01", date(2026, 11, 2))
+    assert chart["start"] == "2026-10-20"
+    assert chart["total_hours"] == 1.0
+
+
+def test_chart_without_sessions_is_flat_and_zero():
+    chart = progress.progress_chart([], "2026-11-01", date(2026, 11, 3))
+    assert chart["total_hours"] == 0
+    assert all(ch not in "╭╯│" for col in _columns(chart) for ch in col)  # nothing rises
+
+
+def test_chart_with_many_days_is_sampled_to_the_width():
+    sessions = [_session("2026-01-01", 60), _session("2026-12-31", 60)]
+    chart = progress.progress_chart(sessions, "2026-01-01", date(2026, 12, 31))
+    axis = chart["lines"][progress.CHART_HEIGHT]
+    assert axis.count("─") == progress.CHART_WIDTH
+    assert chart["lines"][0].startswith("2.0h ┤")  # last point (the total) is kept
+    assert chart["lines"][-1].lstrip().startswith("01.01.")
+    assert chart["lines"][-1].endswith("31.12.")
+
+
+def test_chart_for_a_single_day_still_renders():
+    chart = progress.progress_chart([_session("2026-11-01", 45)], "2026-11-01", date(2026, 11, 1))
+    assert chart["days"] == 1
+    assert chart["lines"][0].startswith("0.8h ┤")
+    assert chart["caption"] == "Hours studied, 01.11.2026 to 01.11.2026 (1 days)"

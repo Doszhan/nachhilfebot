@@ -183,3 +183,14 @@ def test_init_no_git_warning_outside_a_repo(tmp_path):
         "--current-level", "B1", "--aim-level", "C1", "--target-date", "2027-01-01",
     )
     assert profile["data_dir_in_git_repo"] is False
+
+
+def test_status_includes_the_study_time_chart():
+    run(
+        "init", "--native", "en", "--target-language", "de",
+        "--current-level", "B1", "--aim-level", "C1", "--target-date", "2027-01-01",
+    )
+    run("session-log", "--type", "writing", "--minutes", "30", "--score", "7", "--topic", "email")
+    chart = run("status")["progress_chart"]
+    assert chart["total_hours"] == 0.5
+    assert chart["lines"][0].startswith("0.5h ┤")

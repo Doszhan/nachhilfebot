@@ -47,6 +47,111 @@ def progress_bar(done: float, total: float, width: int = 20) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
+CHART_WIDTH = 56
+CHART_HEIGHT = 11  # odd, so the middle label is exactly half of the top one
+AXIS_DATE_FORMAT = "%d.%m."  # day.month, as in the learner's region (de-DE)
+CAPTION_DATE_FORMAT = "%d.%m.%Y"
+
+
+def cumulative_hours(sessions: list[dict], start: date, end: date) -> list[float]:
+    """Running total of hours studied: 0 at the start of `start`, then the total
+    at the end of each day through `end` (so `days + 1` values)."""
+    minutes_by_day: dict[date, int] = defaultdict(int)
+    for s in sessions:
+        minutes_by_day[_parse_date(s["date"])] += s.get("minutes", 0)
+    series = [0.0]
+    total = 0
+    day = start
+    while day <= end:
+        total += minutes_by_day.get(day, 0)
+        series.append(total / 60)
+        day += timedelta(days=1)
+    return series
+
+
+def progress_chart(
+    sessions: list[dict],
+    first_day: str | None,
+    today: date,
+    width: int = CHART_WIDTH,
+    height: int = CHART_HEIGHT,
+) -> dict:
+    """Line chart of cumulative study hours, ready to print in a code block.
+
+    The line starts at 0 on the first day (the profile's creation date, or the
+    first logged session if that is earlier) and ends at today's total. The
+    vertical scale runs from 0 to that total, so the line always reaches the
+    top row; the progress bar shows how far that is from the goal. When there
+    are more days than columns the days are sampled evenly, first and last
+    point included.
+    """
+    session_days = [_parse_date(s["date"]) for s in sessions]
+    first_days = ([_parse_date(first_day)] if first_day else []) + session_days
+    start = min(first_days) if first_days else today
+    end = max([today] + session_days)
+    series = cumulative_hours(sessions, start, end)
+    total = series[-1]
+
+    cols = min(len(series), width)  # at least 2: the zero point and one day
+    picks = [round(i * (len(series) - 1) / (cols - 1)) for i in range(cols)]
+    top = total if total > 0 else 1.0
+    rows = [round(series[i] / top * (height - 1)) for i in picks]
+
+    grid = [[" "] * cols for _ in range(height)]  # grid[0] is the top row
+    grid[height - 1][0] = "─"
+    for x in range(1, cols):
+        y0, y1 = rows[x - 1], rows[x]
+        if y0 == y1:
+            grid[height - 1 - y1][x] = "─"
+        else:  # a cumulative total never falls, so the line only rises here
+            grid[height - 1 - y1][x] = "╭"
+            grid[height - 1 - y0][x] = "╯"
+            for y in range(y0 + 1, y1):
+                grid[height - 1 - y][x] = "│"
+
+    mid = (height - 1) // 2
+    labels = {
+        height - 1: f"{top:.1f}h",
+        mid: f"{top * mid / (height - 1):.1f}h",
+        0: "0h",
+    }
+    label_width = max(len(label) for label in labels.values())
+    lines = []
+    for r in range(height):
+        y = height - 1 - r
+        axis = "┤" if y in labels else "│"
+        lines.append(f"{labels.get(y, ''):>{label_width}} {axis}" + "".join(grid[r]))
+    lines.append(" " * label_width + " └" + "─" * cols)
+
+    offset = label_width + 2
+
+    def day_label(i: int) -> str:
+        return (start + timedelta(days=max(i - 1, 0))).strftime(AXIS_DATE_FORMAT)
+
+    first, last, middle = day_label(picks[0]), day_label(picks[-1]), day_label(picks[cols // 2])
+    dates = [" "] * (offset + cols)
+    last_pos = offset + cols - len(last)
+    mid_pos = offset + cols // 2 - len(middle) // 2
+    texts = [(offset, first), (last_pos, last)]
+    if offset + len(first) < mid_pos and mid_pos + len(middle) < last_pos:
+        texts.append((mid_pos, middle))
+    for pos, text in texts:
+        dates[pos : pos + len(text)] = list(text)
+    lines.append("".join(dates).rstrip())
+
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "days": len(series) - 1,
+        "total_hours": round(total, 2),
+        "caption": (
+            f"Hours studied, {start.strftime(CAPTION_DATE_FORMAT)} to "
+            f"{end.strftime(CAPTION_DATE_FORMAT)} ({len(series) - 1} days)"
+        ),
+        "lines": [line.rstrip() for line in lines],
+    }
+
+
 def compute_streak(sessions: list[dict], today: date) -> dict:
     day_set = {_parse_date(s["date"]) for s in sessions}
     if not day_set:

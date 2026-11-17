@@ -24,6 +24,15 @@ If it errors because no profile exists yet, tell the learner to run
 1. **Progress toward aim level** — show `progress.bar` verbatim as the
    progress bar, followed by: `"<hours_done> hours done, <hours_left> hours
    left"` (use `progress.hours_done` / `progress.hours_left` exactly).
+
+   Directly after it, show the study-time chart: `progress_chart.caption` as
+   a one-line caption (its dates are already in the learner's day.month.year
+   format), then `progress_chart.lines` **verbatim,
+   one per line, inside a plain code block** (the characters only line up in
+   a monospaced block; never redraw, trim or re-scale them). The line starts
+   at 0 on the first day and rises with every logged session; its top row is
+   the current total (`progress_chart.total_hours`). If `total_hours` is 0,
+   say that no sessions are logged yet instead of showing the flat chart.
 2. **Streak** — `streak.current` days (mention `streak.longest` too if it's
    different from current, e.g. "current streak: 3 days, best: 12 days").
 3. **Last 10 sessions** — table from `last_sessions`: date, type, minutes,
