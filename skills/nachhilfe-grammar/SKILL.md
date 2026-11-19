@@ -47,21 +47,29 @@ explanation, show only the first exercise and end your message right there
 (a line like **Type your answer:**) — no answer key, no preview of the rest
 of the set below it. Wait for the learner's answer, give brief feedback on
 that one item, then show the next exercise the same way. Repeat until the
-planned set is done, then grade the whole session per below.
+planned set is done.
 
-Score using the same rubric as writing (`RUBRIC.md` at the plugin root),
-out of 10 — task fulfillment/accuracy is really "did they use the target
-structure correctly," vocabulary/coherence sub-scores still apply if
-exercises involve full sentences.
+**Grade every exercise out of 10** in steps of 0.5, using the grammar scale
+in `RUBRIC.md` at the plugin root, and tell the learner the grade right
+after their answer with the one reason that cost points (10 = fully
+correct, 9 = only a spelling slip, 7–8 = the target structure is right but
+one small error elsewhere, 5–6 = the structure is attempted but with an
+error in it, 3–4 = the structure is wrong but the sentence is
+understandable, 0–2 = not the structure or not understandable). Keep a
+list of the grades; do not average them yourself — the plugin does it.
 
 ## 4. Log the session
 
 ```bash
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe session-log \
-  --type grammar --minutes <your time estimate> --score <total /10> \
+  --type grammar --minutes <your time estimate> \
+  --item-score <grade of exercise 1> --item-score <grade of exercise 2> ... \
   --topic "<the grammar topic practiced>" \
   --mistake "<the same topic string, if they still made errors in it>"
 ```
+
+`--item-score` is repeated once per exercise; the plugin logs their average
+as the session score and returns it.
 
 Tag `--mistake` with the exact topic string being practiced if they made
 any errors in it during the session — this feeds back into

@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import subprocess
 import sys
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 
-from . import db, progress, retry, translate
+from . import db, dialog, progress, retry, translate
 from .fsrs import Card, RATING_NAMES
 from .fsrs import review as fsrs_review
 
@@ -131,6 +132,10 @@ def cmd_status(args: argparse.Namespace) -> None:
         "translate": {
             "average_last_5": progress.rolling_average(sessions, "translate", 5),
             "history": progress.score_history_table(sessions, "translate"),
+        },
+        "dialog": {
+            "average_last_5": progress.rolling_average(sessions, "dialog", 5),
+            "history": progress.score_history_table(sessions, "dialog"),
         },
     }
     _print(report)
@@ -362,8 +367,15 @@ def _append_session(
 
 def cmd_session_log(args: argparse.Namespace) -> None:
     lang = args.lang or db.active_language()
+    score = args.score
+    if args.item_score:
+        if score is not None:
+            raise SystemExit("Pass either --score or --item-score, not both.")
+        if not all(translate.valid_score(v) for v in args.item_score):
+            raise SystemExit("Every --item-score must be between 0 and 10, in steps of 0.5.")
+        score = progress.mean_score(args.item_score)
     session = _append_session(
-        lang, args.type, args.minutes, args.score, args.topic, args.mistake or [], args.date
+        lang, args.type, args.minutes, score, args.topic, args.mistake or [], args.date
     )
     if args.type == "vocab":
         db.delete_db(retry.STATE_NAME, lang)  # the retry list belongs to this session
@@ -557,7 +569,7 @@ def cmd_translate_check(args: argparse.Namespace) -> None:
     if n not in session.get("sentences", {}):
         raise SystemExit(f"No sentence {n} in this session.")
     if n in session["results"]:
-        raise SystemExit(f"Sentence {n} already has a verdict.")
+        raise SystemExit(f"Sentence {n} already has a grade.")
     answer = _read_stdin_or(args.answer, "answer").strip()
 
     slot = next(s for s in session["slots"] if str(s["n"]) == n)
@@ -566,7 +578,7 @@ def cmd_translate_check(args: argparse.Namespace) -> None:
     session["answers"][n] = answer
     session["checks"][n] = result
     if result["exact_match"]:
-        session["results"][n] = {"verdict": "correct", "mistakes": [], "accepted": [], "auto": True}
+        session["results"][n] = {"score": 10.0, "mistakes": [], "accepted": [], "auto": True}
     db.save_db(TRANSLATE_SESSION, session, lang)
     _print(
         {
@@ -574,20 +586,21 @@ def cmd_translate_check(args: argparse.Namespace) -> None:
             "reference": sentence["reference"],
             "grammar_topic": slot["grammar_topic"],
             **result,
-            "verdict_recorded": result["exact_match"],
+            "score_recorded": result["exact_match"],
+            "score": 10.0 if result["exact_match"] else None,
         }
     )
 
 
 def cmd_translate_record(args: argparse.Namespace) -> None:
-    """Store the model's verdict for one sentence, within the code's guard rails."""
+    """Store the model's 0-10 grade for one sentence, within the code's guard rails."""
     lang = args.lang or db.active_language()
     session = _open_translate_session(lang)
     n = str(args.n)
     if n not in session["checks"]:
         raise SystemExit(f"Run translate-check for sentence {n} first.")
     if n in session["results"]:
-        raise SystemExit(f"Sentence {n} already has a verdict.")
+        raise SystemExit(f"Sentence {n} already has a grade.")
 
     grammar = db.load_db("grammar", lang)
     known = _all_grammar_topics(grammar)
@@ -604,29 +617,23 @@ def cmd_translate_record(args: argparse.Namespace) -> None:
     if not accepted <= slot_ids:
         raise SystemExit(f"--accept ids must be target cards of sentence {n}: {sorted(slot_ids)}")
 
-    if args.verdict == "correct":
-        if mistakes:
-            raise SystemExit("A 'correct' verdict cannot carry mistake tags.")
-        unresolved = [
-            k["card_id"]
-            for k in session["checks"][n]["keys"]
-            if k["verdict"] != "ok" and k["card_id"] not in accepted
-        ]
-        if unresolved:
-            raise SystemExit(
-                f"Target word(s) {unresolved} were missing or misspelled in the answer, so "
-                "'correct' is not allowed. Use 'partial'/'wrong', or pass --accept <card_id> "
-                "if the learner used an equally valid expression."
-            )
+    if not translate.valid_score(args.score):
+        raise SystemExit("--score must be between 0 and 10, in steps of 0.5.")
+    ceiling, reason = translate.score_ceiling(session["checks"][n]["keys"], accepted, mistakes)
+    if args.score > ceiling:
+        raise SystemExit(
+            f"A score above {ceiling:g} is not allowed: {reason}. Lower the score, or pass "
+            "--accept <card_id> if the learner used an equally valid expression for a target word."
+        )
 
     session["results"][n] = {
-        "verdict": args.verdict,
+        "score": args.score,
         "mistakes": mistakes,
         "accepted": sorted(accepted),
         "auto": False,
     }
     db.save_db(TRANSLATE_SESSION, session, lang)
-    _print({"n": args.n, "verdict": args.verdict, "answered": len(session["results"])})
+    _print({"n": args.n, "score": args.score, "answered": len(session["results"])})
 
 
 def cmd_translate_finish(args: argparse.Namespace) -> None:
@@ -638,14 +645,14 @@ def cmd_translate_finish(args: argparse.Namespace) -> None:
     open_ns = [s["n"] for s in session["slots"] if str(s["n"]) not in results]
     if open_ns and not args.allow_partial:
         raise SystemExit(
-            f"Sentences without a verdict: {open_ns}. Finish them, or pass --allow-partial."
+            f"Sentences without a grade: {open_ns}. Finish them, or pass --allow-partial."
         )
     if not results:
         raise SystemExit("Nothing was answered; nothing to log.")
 
     answered = [s for s in session["slots"] if str(s["n"]) in results]
-    verdicts = [results[str(s["n"])]["verdict"] for s in answered]
-    score = translate.score_out_of_10(verdicts)
+    scores = {s["n"]: translate.result_score(results[str(s["n"])]) for s in answered}
+    score = progress.mean_score(list(scores.values()))
 
     vocab = db.load_db("vocab", lang)
     by_id = {c["id"]: c for c in vocab["cards"]}
@@ -682,14 +689,169 @@ def cmd_translate_finish(args: argparse.Namespace) -> None:
             "score": score,
             "answered": len(answered),
             "total": len(session["slots"]),
-            "correct": verdicts.count("correct"),
-            "partial": verdicts.count("partial"),
-            "wrong": verdicts.count("wrong"),
+            "sentence_scores": [{"n": n, "score": sc} for n, sc in scores.items()],
+            "perfect": sum(1 for sc in scores.values() if sc == 10),
             "vocab_missed": missed,
             "vocab_spelling": spelling,
             "vocab_hit": hit,
             "grammar_mistakes": [[t, mistakes.count(t)] for t in sorted(set(mistakes), key=lambda t: (-mistakes.count(t), t))],
             "construction_possibly_avoided": sorted(set(marker_missing)),
+        }
+    )
+
+
+# ------------------------------------------------------------------- dialog
+
+DIALOG_DB = "dialog"
+DIALOG_SESSION = "dialog-session"
+_DIALOG_DEFAULT = {"schema_version": 1, "recent": []}
+
+
+def _open_dialog_session(lang: str) -> dict:
+    session = db.load_optional(DIALOG_SESSION, {}, lang)
+    if not session:
+        raise SystemExit("No dialog is open. Run dialog-start first.")
+    return session
+
+
+def _dialog_view(session: dict, resumed: bool) -> dict:
+    return {
+        "resumed": resumed,
+        "level": session["level"],
+        "domain": session["domain"],
+        "request": session["request"],
+        "recent_titles": session["recent_titles"],
+        "turns": session["turns"],
+        "surprise_after_turn": session["surprise_after_turn"],
+        "scenario": session["scenario"],
+        "answered": len(session["results"]),
+    }
+
+
+def cmd_dialog_start(args: argparse.Namespace) -> None:
+    lang = args.lang or db.active_language()
+    today = date.today()
+
+    existing = db.load_optional(DIALOG_SESSION, {}, lang)
+    if existing and existing.get("date") == today.isoformat() and not (args.new or args.request):
+        _print(_dialog_view(existing, resumed=True))
+        return
+
+    profile = db.load_db("profile", lang)
+    history = db.load_optional(DIALOG_DB, _DIALOG_DEFAULT, lang)
+    session = dialog.build_session(
+        profile["current_level"],
+        history.get("recent", []),
+        random.Random(args.seed),
+        turns=args.turns,
+        request=args.request,
+    )
+    session.update({"schema_version": 1, "date": today.isoformat()})
+    db.save_db(DIALOG_SESSION, session, lang)
+    _print(_dialog_view(session, resumed=False))
+
+
+def cmd_dialog_setup(args: argparse.Namespace) -> None:
+    """The model registers the situation it invented, before the first answer is graded."""
+    lang = args.lang or db.active_language()
+    session = _open_dialog_session(lang)
+    if session["results"]:
+        raise SystemExit("The dialog has already begun; its situation can no longer change.")
+    title = args.title.strip()
+    if not title:
+        raise SystemExit("--title must not be empty.")
+    repeated = next(
+        (t for t in session["recent_titles"] if t.strip().lower() == title.lower()), None
+    )
+    if repeated:
+        raise SystemExit(f"'{repeated}' was played recently. Invent a different situation.")
+    session["scenario"] = {"title": title}
+    db.save_db(DIALOG_SESSION, session, lang)
+    _print({"scenario": session["scenario"], "turns": session["turns"]})
+
+
+def cmd_dialog_record(args: argparse.Namespace) -> None:
+    """Grade one learner answer from three sub-scores; the code adds them up."""
+    lang = args.lang or db.active_language()
+    session = _open_dialog_session(lang)
+    if not session["scenario"]:
+        raise SystemExit("Register the situation first: run dialog-setup --title \"...\".")
+    if len(session["results"]) >= session["turns"]:
+        raise SystemExit("All answers of this dialog are graded. Run dialog-finish.")
+    problem = dialog.check_subscores(args.fit, args.accuracy, args.natural)
+    if problem:
+        raise SystemExit(problem)
+
+    known = _all_grammar_topics(db.load_db("grammar", lang))
+    mistakes = args.mistake or []
+    unknown = [m for m in mistakes if m not in known]
+    if unknown:
+        raise SystemExit(
+            f"Unknown grammar topic tag(s): {unknown}. Use the exact strings from grammar-topics."
+        )
+
+    score = dialog.turn_score(args.fit, args.accuracy, args.natural)
+    session["results"].append(
+        {
+            "n": len(session["results"]) + 1,
+            "fit": args.fit,
+            "accuracy": args.accuracy,
+            "natural": args.natural,
+            "score": score,
+            "mistakes": mistakes,
+        }
+    )
+    db.save_db(DIALOG_SESSION, session, lang)
+    answered = len(session["results"])
+    _print(
+        {
+            "n": answered,
+            "score": score,
+            "answered": answered,
+            "remaining": session["turns"] - answered,
+            "surprise_due": answered == session["surprise_after_turn"],
+        }
+    )
+
+
+def cmd_dialog_finish(args: argparse.Namespace) -> None:
+    lang = args.lang or db.active_language()
+    session = _open_dialog_session(lang)
+    results = session["results"]
+    if not results:
+        raise SystemExit("Nothing was answered; nothing to log.")
+    if len(results) < session["turns"] and not args.allow_partial:
+        raise SystemExit(
+            f"Only {len(results)} of {session['turns']} answers are graded. "
+            "Finish the dialog, or pass --allow-partial."
+        )
+
+    scores = [r["score"] for r in results]
+    score = progress.mean_score(scores)
+    mistakes = [m for r in results for m in r["mistakes"]]
+    scenario = session["scenario"]
+    logged = _append_session(lang, "dialog", args.minutes, score, scenario["title"], mistakes)
+
+    history = db.load_optional(DIALOG_DB, _DIALOG_DEFAULT, lang)
+    history.setdefault("recent", []).append(scenario["title"])
+    history["recent"] = history["recent"][-dialog.RECENT_MEMORY :]
+    db.save_db(DIALOG_DB, history, lang)
+    db.delete_db(DIALOG_SESSION, lang)
+
+    _print(
+        {
+            "session": logged,
+            "score": score,
+            "answered": len(results),
+            "turns": session["turns"],
+            "turn_scores": [
+                {k: r[k] for k in ("n", "score", "fit", "accuracy", "natural")} for r in results
+            ],
+            "weakest_turn": min(results, key=lambda r: (r["score"], r["n"]))["n"],
+            "grammar_mistakes": [
+                [t, mistakes.count(t)] for t in sorted(set(mistakes), key=lambda t: (-mistakes.count(t), t))
+            ],
+            "surprise_planned": session["surprise_after_turn"] is not None,
         }
     )
 
@@ -793,10 +955,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("session-log", help="log a completed session")
     p.add_argument("--lang")
     p.add_argument(
-        "--type", required=True, choices=["vocab", "writing", "reading", "grammar", "translate"]
+        "--type", required=True, choices=["vocab", "writing", "reading", "grammar", "translate", "dialog"]
     )
     p.add_argument("--minutes", type=int, required=True)
     p.add_argument("--score", type=float)
+    p.add_argument(
+        "--item-score",
+        type=float,
+        action="append",
+        help="0-10 grade of one exercise; repeat per exercise, the plugin logs their average",
+    )
     p.add_argument("--topic")
     p.add_argument(
         "--mistake",
@@ -853,10 +1021,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--answer", help="the answer text; read from stdin when omitted")
     p.set_defaults(func=cmd_translate_check)
 
-    p = sub.add_parser("translate-record", help="store the verdict for one sentence")
+    p = sub.add_parser("translate-record", help="store the 0-10 grade for one sentence")
     p.add_argument("--lang")
     p.add_argument("--n", type=int, required=True)
-    p.add_argument("--verdict", required=True, choices=list(translate.VERDICTS))
+    p.add_argument("--score", type=float, required=True, help="0-10, in steps of 0.5 (see RUBRIC.md)")
     p.add_argument("--mistake", action="append", help="exact grammar-topic tag; repeat for several")
     p.add_argument(
         "--accept",
@@ -870,6 +1038,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--minutes", type=int, required=True)
     p.add_argument("--allow-partial", action="store_true")
     p.set_defaults(func=cmd_translate_finish)
+
+    p = sub.add_parser(
+        "dialog-start",
+        help="open a real-life dialog: an area-of-life nudge, recent situations to avoid, a surprise plan",
+    )
+    p.add_argument("--lang")
+    p.add_argument("--turns", type=int, default=dialog.DEFAULT_TURNS)
+    p.add_argument("--request", help="a situation the learner asked for, e.g. 'at the pharmacy'")
+    p.add_argument("--seed", type=int)
+    p.add_argument("--new", action="store_true", help="discard today's open dialog and start over")
+    p.set_defaults(func=cmd_dialog_start)
+
+    p = sub.add_parser(
+        "dialog-setup", help="register the situation you invented (a short English title)"
+    )
+    p.add_argument("--lang")
+    p.add_argument("--title", required=True)
+    p.set_defaults(func=cmd_dialog_setup)
+
+    p = sub.add_parser("dialog-record", help="grade the learner's last answer (three sub-scores)")
+    p.add_argument("--lang")
+    p.add_argument("--fit", type=int, required=True, help=f"0-{dialog.FIT_MAX}: answers what was asked / fits the situation")
+    p.add_argument("--accuracy", type=int, required=True, help=f"0-{dialog.ACCURACY_MAX}: grammar and word choice")
+    p.add_argument("--natural", type=int, required=True, help=f"0-{dialog.NATURAL_MAX}: sounds like real speech, right register")
+    p.add_argument("--mistake", action="append", help="exact grammar-topic tag; repeat for several")
+    p.set_defaults(func=cmd_dialog_record)
+
+    p = sub.add_parser("dialog-finish", help="average the answers, log the session and close the dialog")
+    p.add_argument("--lang")
+    p.add_argument("--minutes", type=int, required=True)
+    p.add_argument("--allow-partial", action="store_true")
+    p.set_defaults(func=cmd_dialog_finish)
 
     p = sub.add_parser("config-get", help="read a config file")
     p.add_argument("--lang")

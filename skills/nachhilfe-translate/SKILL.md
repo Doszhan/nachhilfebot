@@ -126,8 +126,8 @@ Repeat until the plugin says `done`:
    ```
 
 3. Read the result:
-   - `exact_match: true` (`verdict_recorded: true`): correct, already
-     recorded. Confirm it, show the reference, move on. Don't grade it again.
+   - `exact_match: true` (`score_recorded: true`): perfect, already graded
+     10/10. Confirm it, show the reference, move on. Don't grade it again.
    - Otherwise compare `reference` and the answer yourself, guided by the
      computed facts:
      - `keys[].tokens[].status`: `missing` = the word is not in the answer (a
@@ -138,9 +138,15 @@ Repeat until the plugin says `done`:
      - `grammar_marker_found: false` = no typical marker of the requested
        construction was found, so the learner may have avoided it. Say so if
        it is true for their answer.
-   - Decide the verdict: `correct` (meaning and grammar right, even if worded
-     differently), `partial` (understandable, with errors or a target word
-     missing/misspelled), `wrong` (meaning lost or serious errors).
+   - Grade the answer **out of 10**, in steps of 0.5, with the scale in
+     `RUBRIC.md` (every answer gets its own number — do not fall back to
+     "all or half"):
+     10 = fully correct; 9 = only a spelling or umlaut slip; 7–8 = meaning
+     and structure right with one or two small errors (an ending, an
+     article); 5–6 = understandable but several errors, or a target word
+     missing; 3–4 = only part of the meaning conveyed, or serious errors;
+     1–2 = fragments; 0 = nothing usable. Judge meaning and grammar, not
+     whether the wording matches the reference.
    - Tag every grammar mistake with the **exact** topic string from
      `grammar-topics` (run `grammar-topics --level <A2|A1>` for a basic
      topic), one `--mistake` per error. Spelling and vocabulary slips need no
@@ -149,17 +155,20 @@ Repeat until the plugin says `done`:
      word, pass `--accept <card_id>` for that card.
 
    ```bash
-   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe translate-record --n <N> --verdict "<correct|partial|wrong>" \
+   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe translate-record --n <N> --score <0-10> \
      --mistake "<exact grammar topic>" --accept "<card id>"
    ```
 
-   The plugin refuses `correct` while a target word is missing or misspelled,
-   or together with mistake tags. Follow its message instead of arguing with it.
+   The plugin caps the grade to what it measured: at most 7 while a target
+   word is missing, at most 9 while one is misspelled or the answer carries
+   mistake tags (so 10 means flawless). Follow its message instead of
+   arguing with it.
 
 4. Give short feedback in the target language (with source-language glosses
    where that helps): show the reference, quote what was wrong in the
    learner's answer, and state the rule or the correct form in one line. Base
-   it on what the check reported; don't invent errors.
+   it on what the check reported; don't invent errors. Tell the learner the
+   grade out of 10 and the one reason that cost the most points.
 
 ## 5. Finish and log
 
@@ -170,14 +179,15 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe translate-finish
 ```
 
 (Add `--allow-partial` if the learner stopped early; only answered sentences
-count.) The plugin computes the score out of 10 as
-`(correct + 0.5 × partial) / answered × 10`, updates the per-word statistics
+count.) The plugin computes the session score as the average of the sentence
+grades, updates the per-word statistics
 that steer the next session, logs the session, and adds the mistake tags to
 the grammar mistake counts.
 
 Show the learner, from the result and without recomputing anything:
 
-- the score and the correct / partial / wrong counts;
+- the session score and the grade of every sentence (`sentence_scores`),
+  plus how many were perfect (`perfect`);
 - `vocab_missed` (words they could not produce) and `vocab_spelling` (words
   they spelled wrongly), by `target_word`;
 - `grammar_mistakes` and `construction_possibly_avoided`;

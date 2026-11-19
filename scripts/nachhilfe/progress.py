@@ -39,6 +39,13 @@ def hours_done(sessions: list[dict]) -> float:
     return sum(s.get("minutes", 0) for s in sessions) / 60
 
 
+def mean_score(scores: list[float]) -> float:
+    """Average of per-item scores out of 10, one decimal. The model never does this sum."""
+    if not scores:
+        return 0.0
+    return round(sum(scores) / len(scores), 1)
+
+
 def progress_bar(done: float, total: float, width: int = 20) -> str:
     if total <= 0:
         filled = width

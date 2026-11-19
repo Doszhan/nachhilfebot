@@ -264,10 +264,25 @@ def test_answer_without_the_construction_is_flagged_as_possibly_avoided():
     assert res["keys"][0]["verdict"] == "ok"
 
 
-def test_score_out_of_10_counts_partial_as_half():
-    assert tr.score_out_of_10(["correct", "correct", "partial", "wrong"]) == 6.2
-    assert tr.score_out_of_10(["correct"] * 3) == 10.0
-    assert tr.score_out_of_10([]) == 0.0
+def test_scores_are_valid_between_0_and_10_in_half_steps():
+    assert all(tr.valid_score(v) for v in (0, 0.5, 4, 7.5, 10))
+    assert not any(tr.valid_score(v) for v in (-1, 10.5, 11, 6.3))
+
+
+def test_a_legacy_verdict_still_maps_to_a_score():
+    assert tr.result_score({"score": 7.5}) == 7.5
+    assert [tr.result_score({"verdict": v}) for v in ("correct", "partial", "wrong")] == [10.0, 5.0, 0.0]
+
+
+def test_score_ceiling_follows_what_the_code_measured():
+    ok = {"card_id": "c1", "verdict": "ok"}
+    spelling = {"card_id": "c1", "verdict": "spelling"}
+    missing = {"card_id": "c1", "verdict": "missing"}
+    assert tr.score_ceiling([ok], set(), [])[0] == 10
+    assert tr.score_ceiling([ok], set(), ["Relativsätze"])[0] == 9
+    assert tr.score_ceiling([spelling], set(), [])[0] == 9
+    assert tr.score_ceiling([missing], set(), [])[0] == 7
+    assert tr.score_ceiling([missing], {"c1"}, [])[0] == 10  # accepted as an equal expression
 
 
 def test_card_outcome_and_stats():
@@ -425,29 +440,33 @@ def test_full_session_scores_updates_stats_and_logs(session):
     items = submission(plan, keys)
     run("translate-submit", "--json", json.dumps(items))
 
-    # sentence 1: exact -> verdict is recorded automatically
+    # sentence 1: exact -> graded 10 automatically
     checked = run("translate-check", "--n", "1", "--answer", items[0]["reference"].lower())
-    assert checked["exact_match"] and checked["verdict_recorded"]
-    assert "already has a verdict" in fail("translate-record", "--n", "1", "--verdict", "wrong")
+    assert checked["exact_match"] and checked["score_recorded"] and checked["score"] == 10.0
+    assert "already has a grade" in fail("translate-record", "--n", "1", "--score", "2")
 
     # sentence 2: drop a required word and the construction
     wrong = run("translate-check", "--n", "2", "--answer", "Ich weiß es nicht")
-    assert not wrong["verdict_recorded"]
+    assert not wrong["score_recorded"]
     assert wrong["reference"] == items[1]["reference"]
     assert any(k["verdict"] == "missing" for k in wrong["keys"])
 
-    # the code refuses a lenient 'correct' while target words are missing
-    assert "not allowed" in fail("translate-record", "--n", "2", "--verdict", "correct")
+    # the code refuses a lenient grade while target words are missing
+    assert "not allowed" in fail("translate-record", "--n", "2", "--score", "9")
+    assert "between 0 and 10" in fail("translate-record", "--n", "2", "--score", "11")
+    assert "between 0 and 10" in fail("translate-record", "--n", "2", "--score", "6.3")
     assert "exact strings" in fail(
-        "translate-record", "--n", "2", "--verdict", "wrong", "--mistake", "Made-up topic"
+        "translate-record", "--n", "2", "--score", "2", "--mistake", "Made-up topic"
     )
-    run("translate-record", "--n", "2", "--verdict", "wrong", "--mistake", "Relativsätze")
+    recorded = run("translate-record", "--n", "2", "--score", "2.5", "--mistake", "Relativsätze")
+    assert recorded["score"] == 2.5
 
     assert run("translate-next")["done"] is True
     result = run("translate-finish", "--minutes", "9")
 
-    assert result["score"] == 5.0
-    assert (result["correct"], result["partial"], result["wrong"]) == (1, 0, 1)
+    assert result["score"] == 6.2  # mean of 10 and 2.5
+    assert result["sentence_scores"] == [{"n": 1, "score": 10.0}, {"n": 2, "score": 2.5}]
+    assert result["perfect"] == 1
     assert result["grammar_mistakes"] == [["Relativsätze", 1]]
     assert len(result["vocab_missed"]) == len(items[1]["keys"])
     assert result["session"]["type"] == "translate"
@@ -461,7 +480,7 @@ def test_full_session_scores_updates_stats_and_logs(session):
     stats = db.load_db("translate")["cards"]
     missed_ids = {m["id"] for m in result["vocab_missed"]}
     assert all(stats[i]["missed"] == 1 for i in missed_ids)
-    assert run("status")["translate"]["average_last_5"] == 5.0
+    assert run("status")["translate"]["average_last_5"] == 6.2
     assert fail("translate-next").startswith("No translate session is open")
 
 
@@ -474,24 +493,24 @@ def test_accepting_an_equivalent_expression_allows_correct(session):
     words = [t for cid in slot_cards[1:] for t in keys[cid]]
     answer = f"{PREFIX[plan['slots'][0]['grammar_topic']]} synonym {' '.join(words)}"
     checked = run("translate-check", "--n", "1", "--answer", answer)
-    assert not checked["verdict_recorded"]
-    assert "not allowed" in fail("translate-record", "--n", "1", "--verdict", "correct")
-    run("translate-record", "--n", "1", "--verdict", "correct", "--accept", slot_cards[0])
+    assert not checked["score_recorded"]
+    assert "not allowed" in fail("translate-record", "--n", "1", "--score", "10")
+    run("translate-record", "--n", "1", "--score", "10", "--accept", slot_cards[0])
 
 
-def test_correct_verdict_cannot_carry_mistake_tags(session):
+def test_a_perfect_score_cannot_carry_mistake_tags(session):
     plan, keys = session
     items = submission(plan, keys)
     run("translate-submit", "--json", json.dumps(items))
     # all target words present, but not word-for-word the reference -> the model must judge
     answer = items[0]["reference"].replace(".", " sehr.")
     checked = run("translate-check", "--n", "1", "--answer", answer)
-    assert not checked["exact_match"] and not checked["verdict_recorded"]
+    assert not checked["exact_match"] and not checked["score_recorded"]
     assert all(k["verdict"] == "ok" for k in checked["keys"])
-    assert "cannot carry mistake tags" in fail(
-        "translate-record", "--n", "1", "--verdict", "correct", "--mistake", "Relativsätze"
+    assert "not allowed" in fail(
+        "translate-record", "--n", "1", "--score", "10", "--mistake", "Relativsätze"
     )
-    run("translate-record", "--n", "1", "--verdict", "correct")
+    run("translate-record", "--n", "1", "--score", "9", "--mistake", "Relativsätze")
 
 
 def test_finish_requires_all_sentences_unless_partial_is_allowed(session):
@@ -499,7 +518,7 @@ def test_finish_requires_all_sentences_unless_partial_is_allowed(session):
     items = submission(plan, keys)
     run("translate-submit", "--json", json.dumps(items))
     run("translate-check", "--n", "1", "--answer", items[0]["reference"])
-    assert "Sentences without a verdict" in fail("translate-finish", "--minutes", "5")
+    assert "Sentences without a grade" in fail("translate-finish", "--minutes", "5")
     result = run("translate-finish", "--minutes", "5", "--allow-partial")
     assert result["answered"] == 1 and result["total"] == 2 and result["score"] == 10.0
 

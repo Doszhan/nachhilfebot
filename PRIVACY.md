@@ -12,7 +12,8 @@ is written anywhere else. Writing and reading sessions keep only the topic,
 score and minutes, not the text you submitted. During a
 translate session your typed answers are kept in the session file until you
 finish it; they are then deleted and only the score, mistake tags and
-per-word hit/miss counts remain.
+per-word hit/miss counts remain. A dialog session stores no conversation text
+at all, only the situation title, the grade of each answer and the mistake tags.
 
 Delete the `nachhilfe/` folder to delete all of your data. Uninstalling the
 plugin never touches it.

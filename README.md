@@ -6,12 +6,13 @@ prompts and less drift.
 
 It offers FSRS-scheduled vocabulary drills (with an end-of-session retry
 round), exam-style writing/reading/grammar practice, translation exercises
-built around your weakest words and grammar topics, and a progress dashboard. Every number
+built around your weakest words and grammar topics, real-life dialog practice
+with a random everyday situation, and a progress dashboard. Every number
 (streaks, hour totals, FSRS scheduling, score averages) is computed by a
 small vendored Python backend instead of estimated by the model, and each
 command's prompt stays short so the model stays focused on what only it can
 do: writing tasks, explanations, and feedback on your language. See
-`RUBRIC.md` for the writing/grammar scoring rubric.
+`RUBRIC.md` for the scoring rubric of every exercise.
 
 ## Install
 
@@ -54,12 +55,13 @@ To install from a local clone instead of GitHub, pass its path:
 | Command | What it does |
 |---|---|
 | `/nachhilfe-init` | Set up your profile: native/target language, current & aim CEFR level, timeframe. |
-| `/nachhilfe-status` | Progress bar to your aim level with a line chart of your total study hours since day one, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar/translate score trends. |
+| `/nachhilfe-status` | Progress bar to your aim level with a line chart of your total study hours since day one, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar/translate/dialog score trends. |
 | `/nachhilfe-vocab` | FSRS-scheduled vocabulary review (native language → target language). Words you got wrong or only barely right are asked again at the end of the session; that retry round never changes the schedule. |
 | `/nachhilfe-writing` | Exam-style writing task, graded against `RUBRIC.md`. |
 | `/nachhilfe-reading` | Level-appropriate reading text with comprehension questions, scored as % correct. |
 | `/nachhilfe-grammar` | Practice a random topic at your level, or your weakest topic by mistake count. |
-| `/nachhilfe-translate` | Translate sentences from your native language into the target language. The plugin picks the words and grammar topics you fail most; code validates the sentences, matches your answers against the required words and scores the session. |
+| `/nachhilfe-translate` | Translate sentences from your native language into the target language. The plugin picks the words and grammar topics you fail most; code validates the sentences, matches your answers against the required words and caps the grade it can give. Every sentence is graded 0-10, the session score is the average. |
+| `/nachhilfe-dialog` | Real-life conversation practice with no fixed scenarios: the bot invents a fresh everyday situation and its characters every time (nudged by a random area of life, never repeating a recent one), plays the other person and speaks first. You answer short and direct and may ask questions too; sometimes something unexpected happens. Each answer is corrected right away and graded 0-10 from three sub-scores. |
 | `/nachhilfe-config` | Edit hour-per-level-transition estimates or FSRS mastery thresholds. |
 
 If a bare `/nachhilfe-init` doesn't resolve on your Claude Code version,
@@ -87,6 +89,8 @@ missing) data; there's no cross-directory memory by design.
     vocab-session.json              # today's retry list (exists only during a vocab session)
     translate.json                   # per-word translate stats and the translate source language
     translate-session.json            # the open translate session (deleted when it is finished)
+    dialog.json                        # titles of the situations you played lately (so they don't repeat)
+    dialog-session.json                 # the open dialog: situation title, surprise plan, grades (deleted when finished)
     reading.json / writing.json     # rubric version + topics already used
     grammar.json                     # grammar topic taxonomy + mistake counts
     level-hours.json                  # hours needed per CEFR transition (editable)
@@ -103,6 +107,8 @@ submitted text or generated content — to keep the database small and avoid
 retaining potentially sensitive writing long-term. Translate sessions keep
 your typed answers only while the session is open; `translate-finish` deletes
 them and keeps just the score, the mistake tags and per-word hit/miss counts.
+Dialog sessions never store what you or the bot said, only the situation, the
+grade of each answer and the mistake tags.
 
 ## Privacy
 
@@ -127,8 +133,19 @@ writes and explains.**
   similar / missing), which pinpoints wrong prepositions, missing reflexive
   pronouns and misspellings without a model. The model judges whatever the
   matching can't (alternative wording, grammar errors) inside guard rails:
-  `correct` is refused while a target word is missing, and mistake tags must
-  be exact grammar-topic strings. Score and statistics are computed in code.
+  every sentence gets a grade from 0 to 10, but the plugin caps it at 7 while
+  a target word is missing and at 9 while one is misspelled or the answer
+  carries mistake tags, and mistake tags must be exact grammar-topic strings.
+  The session score and statistics are computed in code.
+* **Dialog** (`/nachhilfe-dialog`): there is no scenario list. The model
+  invents the situation, the people, their mood and any surprise afresh for
+  every dialog. The plugin only keeps it varied and honest: it gives a random
+  area-of-life nudge (otherwise models repeat the same few situations),
+  remembers the situation titles played lately and rejects a repeat, plans
+  whether and after which answer a surprise happens, and validates the mistake
+  tags. The model corrects each answer right after it, and grades it from
+  three sub-scores (fit 0-4, accuracy 0-3, naturalness 0-3); the plugin adds
+  them up and averages the session.
 
 ## Design principles
 
@@ -161,6 +178,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 Covers `fsrs.py` (FSRS state transitions, rating ordering, mastery
 buckets), `progress.py` (streaks, hour math, rolling averages, score
 rollups), `retry.py` (retry list rules), `translate.py` (target selection,
-sentence validation, answer matching, scoring), and a round-trip `db.py`/`cli.py` integration test that `chdir`s
+sentence validation, answer matching, score ceilings), `dialog.py` (variety
+nudge, surprise plan, per-answer grading), and a round-trip `db.py`/`cli.py` integration test that `chdir`s
 into a temp directory (the data root always resolves to `<cwd>/nachhilfe`)
 — never touches your real data location.

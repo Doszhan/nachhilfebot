@@ -30,7 +30,16 @@ DEFAULT_PER_SENTENCE = 2
 SIMILARITY_THRESHOLD = 0.8
 MIN_FUZZY_LEN = 5
 
-VERDICTS = ("correct", "partial", "wrong")
+# Every answer is graded 0-10 in half-point steps (see RUBRIC.md). Sessions opened
+# before per-answer scores existed hold a verdict instead; it maps to these scores.
+SCORE_STEP = 0.5
+LEGACY_VERDICT_SCORES = {"correct": 10.0, "partial": 5.0, "wrong": 0.0}
+
+# Ceilings the model's grade must respect, so a lenient grade cannot hide a problem
+# the code has measured: a missing target word, a misspelled one, a tagged mistake.
+CAP_TARGET_WORD_MISSING = 7.0
+CAP_TARGET_WORD_MISSPELLED = 9.0
+CAP_GRAMMAR_MISTAKE = 9.0
 
 
 # --------------------------------------------------------------------------
@@ -466,11 +475,27 @@ def check_answer(answer: str, sentence: dict, grammar_topic: str | None, lang: s
     }
 
 
-def score_out_of_10(verdicts: list[str]) -> float:
-    if not verdicts:
-        return 0.0
-    points = sum(1.0 if v == "correct" else 0.5 if v == "partial" else 0.0 for v in verdicts)
-    return round(10 * points / len(verdicts), 1)
+def valid_score(score: float) -> bool:
+    return 0 <= score <= 10 and (score / SCORE_STEP).is_integer()
+
+
+def result_score(result: dict) -> float:
+    """The 0-10 grade of one recorded answer (maps a legacy verdict if that is all there is)."""
+    if "score" in result:
+        return float(result["score"])
+    return LEGACY_VERDICT_SCORES[result["verdict"]]
+
+
+def score_ceiling(key_results: list[dict], accepted: set[str], mistakes: list[str]) -> tuple[float, str | None]:
+    """Highest grade allowed for an answer, and why (None when nothing caps it)."""
+    unresolved = [k for k in key_results if k["verdict"] != "ok" and k["card_id"] not in accepted]
+    if any(k["verdict"] == "missing" for k in unresolved):
+        return CAP_TARGET_WORD_MISSING, "a target word is missing from the answer"
+    if unresolved:
+        return CAP_TARGET_WORD_MISSPELLED, "a target word is misspelled"
+    if mistakes:
+        return CAP_GRAMMAR_MISTAKE, "the answer carries grammar mistake tags"
+    return 10.0, None
 
 
 def card_outcome(key_result: dict, accepted: set[str]) -> str:
