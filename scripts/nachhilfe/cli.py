@@ -18,7 +18,7 @@ import uuid
 from datetime import date, datetime
 from pathlib import Path
 
-from . import db, dialog, progress, retry, translate
+from . import db, dialog, progress, retry, translate, vocab as vocab_cards
 from .fsrs import Card, RATING_NAMES
 from .fsrs import review as fsrs_review
 
@@ -183,14 +183,103 @@ def cmd_vocab_words(args: argparse.Namespace) -> None:
     _print(sorted({c["native_word"] for c in vocab["cards"]}))
 
 
+def _find_card(vocab: dict, card_id: str) -> dict:
+    for c in vocab["cards"]:
+        if c["id"] == card_id:
+            return c
+    raise SystemExit(f"No such card id: {card_id}")
+
+
 def cmd_vocab_reveal(args: argparse.Namespace) -> None:
+    """Answer side of a card, shown only after the learner has answered.
+
+    Also returns the stored example sentences (empty until `vocab-examples`
+    saved some) and the learner's earlier decisions about synonyms.
+    """
+    lang = args.lang or db.active_language()
+    c = _find_card(db.load_db("vocab", lang), args.card_id)
+    synonyms = vocab_cards.synonym_lists(c)
+    _print(
+        {
+            "id": c["id"],
+            "native_word": c["native_word"],
+            "target_word": c["target_word"],
+            "examples": c.get("examples", []),
+            "accepted_synonyms": synonyms["accepted"],
+            "rejected_synonyms": synonyms["rejected"],
+        }
+    )
+
+
+def cmd_vocab_examples(args: argparse.Namespace) -> None:
+    """Store three example sentences (JSON on stdin) with their translations."""
     lang = args.lang or db.active_language()
     vocab = db.load_db("vocab", lang)
-    for c in vocab["cards"]:
-        if c["id"] == args.card_id:
-            _print({"id": c["id"], "native_word": c["native_word"], "target_word": c["target_word"]})
-            return
-    raise SystemExit(f"No such card id: {args.card_id}")
+    c = _find_card(vocab, args.card_id)
+    if c.get("examples") and not args.replace:
+        raise SystemExit("This card already has examples; pass --replace to overwrite them.")
+    try:
+        raw = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"Examples must be valid JSON: {err}")
+    examples, problem = vocab_cards.check_examples(raw)
+    if problem:
+        raise SystemExit(problem)
+    c["examples"] = examples
+    db.save_db("vocab", vocab, lang)
+    _print({"id": c["id"], "target_word": c["target_word"], "examples": examples})
+
+
+def cmd_vocab_synonym(args: argparse.Namespace) -> None:
+    """Remember whether the learner wants a synonym counted as correct for this card."""
+    lang = args.lang or db.active_language()
+    vocab = db.load_db("vocab", lang)
+    c = _find_card(vocab, args.card_id)
+    word = " ".join(args.word.split())
+    if not word:
+        raise SystemExit("--word must not be empty.")
+    lists = vocab_cards.record_synonym(c, word, args.verdict == "accept")
+    db.save_db("vocab", vocab, lang)
+    _print({"id": c["id"], "target_word": c["target_word"], "synonyms": lists})
+
+
+def cmd_vocab_recent(args: argparse.Namespace) -> None:
+    """The latest reviewed or added cards, for picking one to edit."""
+    lang = args.lang or db.active_language()
+    vocab = db.load_db("vocab", lang)
+    _print(
+        [
+            {
+                "id": c["id"],
+                "native_word": c["native_word"],
+                "target_word": c["target_word"],
+                "level": c.get("level"),
+                "last_review": c.get("last_review"),
+            }
+            for c in vocab_cards.recent_cards(vocab["cards"], args.limit)
+        ]
+    )
+
+
+def cmd_vocab_edit_native(args: argparse.Namespace) -> None:
+    """Change the native-language side of a card; the schedule is left alone."""
+    lang = args.lang or db.active_language()
+    vocab = db.load_db("vocab", lang)
+    c = _find_card(vocab, args.card_id)
+    new_word = " ".join(args.native_word.split())
+    if not new_word:
+        raise SystemExit("--native-word must not be empty.")
+    old_word = c["native_word"]
+    if new_word == old_word:
+        raise SystemExit("That is already the card's native word; nothing to change.")
+    clash = vocab_cards.duplicate_native(vocab["cards"], new_word, c["id"])
+    if clash:
+        raise SystemExit(
+            f'Card {clash["id"]} ("{clash["target_word"]}") already uses the native word "{clash["native_word"]}".'
+        )
+    c["native_word"] = new_word
+    db.save_db("vocab", vocab, lang)
+    _print({"id": c["id"], "target_word": c["target_word"], "previous_native_word": old_word, "native_word": new_word})
 
 
 def cmd_vocab_due(args: argparse.Namespace) -> None:
@@ -255,6 +344,7 @@ def cmd_vocab_review(args: argparse.Namespace) -> None:
                 "reps": card.reps,
                 "lapses": card.lapses,
                 "last_review": card.last_review.isoformat(),
+                "last_reviewed_at": datetime.now().isoformat(),
                 "due": card.due.isoformat(),
                 "state": card.state,
             }
@@ -908,6 +998,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lang")
     p.add_argument("--card-id", required=True)
     p.set_defaults(func=cmd_vocab_reveal)
+
+    p = sub.add_parser("vocab-examples", help="store three example sentences (JSON on stdin) for a card")
+    p.add_argument("--lang")
+    p.add_argument("--card-id", required=True)
+    p.add_argument("--replace", action="store_true", help="overwrite existing examples")
+    p.set_defaults(func=cmd_vocab_examples)
+
+    p = sub.add_parser("vocab-synonym", help="remember whether a synonym counts as correct for a card")
+    p.add_argument("--lang")
+    p.add_argument("--card-id", required=True)
+    p.add_argument("--word", required=True, help="the synonym the learner gave")
+    p.add_argument("--verdict", required=True, choices=["accept", "reject"])
+    p.set_defaults(func=cmd_vocab_synonym)
+
+    p = sub.add_parser("vocab-recent", help="the latest reviewed or added cards, to pick one to edit")
+    p.add_argument("--lang")
+    p.add_argument("--limit", type=int, default=vocab_cards.RECENT_DEFAULT)
+    p.set_defaults(func=cmd_vocab_recent)
+
+    p = sub.add_parser("vocab-edit-native", help="change a card's native-language word (schedule untouched)")
+    p.add_argument("--lang")
+    p.add_argument("--card-id", required=True)
+    p.add_argument("--native-word", required=True)
+    p.set_defaults(func=cmd_vocab_edit_native)
 
     p = sub.add_parser("vocab-due", help="cards due for review")
     p.add_argument("--lang")

@@ -75,6 +75,8 @@ is empty), say so plainly rather than showing an empty table.
      per-discipline performance.
    - `/nachhilfe-vocab` — FSRS-scheduled vocabulary review/learning
      session (native → target production).
+   - `/nachhilfe-vocab-edit-native` — change the native-language word of
+     one of your latest vocab cards.
    - `/nachhilfe-writing` — exam-style writing task, graded against the
      shared rubric.
    - `/nachhilfe-reading` — level-appropriate reading text with

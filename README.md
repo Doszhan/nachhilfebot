@@ -56,7 +56,8 @@ To install from a local clone instead of GitHub, pass its path:
 |---|---|
 | `/nachhilfe-init` | Set up your profile: native/target language, current & aim CEFR level, timeframe. |
 | `/nachhilfe-status` | Progress bar to your aim level with a line chart of your total study hours since day one, streak, recent sessions, vocab mastery breakdown, reading/writing/grammar/translate/dialog score trends. |
-| `/nachhilfe-vocab` | FSRS-scheduled vocabulary review (native language → target language). Words you got wrong or only barely right are asked again at the end of the session; that retry round never changes the schedule. |
+| `/nachhilfe-vocab` | FSRS-scheduled vocabulary review (native language → target language). After each answer you see three example sentences (target language with a translation); they are saved on the card, so the same ones come back. If you answer with a synonym, you decide whether it counts as correct, and the plugin remembers your decision for that card. Words you got wrong or only barely right are asked again at the end of the session; that retry round never changes the schedule. |
+| `/nachhilfe-vocab-edit-native` | Pick one of your latest cards and change its native-language word (for example a vague or wrong translation). The target word and the schedule stay as they are. |
 | `/nachhilfe-writing` | Exam-style writing task, graded against `RUBRIC.md`. |
 | `/nachhilfe-reading` | Level-appropriate reading text with comprehension questions, scored as % correct. |
 | `/nachhilfe-grammar` | Practice a random topic at your level, or your weakest topic by mistake count. |
@@ -85,7 +86,7 @@ missing) data; there's no cross-directory memory by design.
   <lang>/
     profile.json                 # native/target language, levels, target date
     status.json                   # append-only session log (all types)
-    vocab.json                     # FSRS card states
+    vocab.json                     # FSRS card states, saved example sentences, synonym decisions
     vocab-session.json              # today's retry list (exists only during a vocab session)
     translate.json                   # per-word translate stats and the translate source language
     translate-session.json            # the open translate session (deleted when it is finished)
@@ -177,7 +178,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 Covers `fsrs.py` (FSRS state transitions, rating ordering, mastery
 buckets), `progress.py` (streaks, hour math, rolling averages, score
-rollups), `retry.py` (retry list rules), `translate.py` (target selection,
+rollups), `retry.py` (retry list rules), `vocab.py` (recent cards, native-word edits, example
+sentences, synonym decisions), `translate.py` (target selection,
 sentence validation, answer matching, score ceilings), `dialog.py` (variety
 nudge, surprise plan, per-answer grading), and a round-trip `db.py`/`cli.py` integration test that `chdir`s
 into a temp directory (the data root always resolves to `<cwd>/nachhilfe`)

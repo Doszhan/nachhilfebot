@@ -5,7 +5,9 @@ receive, or store any of your data.
 
 ## What the plugin stores
 
-Your profile, vocabulary cards, session log (date, time, type, minutes,
+Your profile, vocabulary cards (including the example sentences the model
+wrote for them and any single words you accepted or rejected as synonyms),
+session log (date, time, type, minutes,
 score, topic, mistake tags) and settings are written as JSON files to a
 `nachhilfe/` folder inside the directory you start Claude Code from. Nothing
 is written anywhere else. Writing and reading sessions keep only the topic,

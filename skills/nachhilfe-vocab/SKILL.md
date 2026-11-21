@@ -1,6 +1,6 @@
 ---
 name: nachhilfe-vocab
-description: Run a vocabulary review/learning session using FSRS spaced repetition — the learner sees a word in their native language and must produce it in the target language. Use only when invoked as /nachhilfe-vocab.
+description: Run a vocabulary review/learning session using FSRS spaced repetition — the learner sees a word in their native language and must produce it in the target language, then gets three example sentences. A valid synonym counts as correct only if the learner agrees. Use only when invoked as /nachhilfe-vocab.
 disable-model-invocation: true
 ---
 
@@ -70,23 +70,68 @@ For each card, one at a time:
    PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe vocab-reveal --card-id "<id>"
    ```
 
-3. Judge correctness (accept minor typos, missing articles only if the
-   task didn't ask for them, valid synonyms) and pick an FSRS rating:
+   The result also holds `examples` (the card's saved example sentences, empty
+   until some were saved), `accepted_synonyms` and `rejected_synonyms` (the
+   learner's earlier decisions about synonyms for this card).
+3. Judge correctness (accept minor typos and missing articles only if the
+   task didn't ask for them) and pick an FSRS rating:
    - **again** — wrong or no recall at all
    - **hard** — correct but with real hesitation or a small but genuine error
    - **good** — correct, normal recall
    - **easy** — correct, instant/confident recall
-4. Apply it:
+
+   **Synonyms: the learner decides, not you.** If the answer is not the card's
+   word but is a real German word with the same meaning (not a typo, not a
+   related word with another meaning):
+   - listed in `accepted_synonyms`: count it as correct (`good`) without asking;
+   - listed in `rejected_synonyms`: count it as not matching (`again`) without
+     asking, and say that the card wants the card's word;
+   - otherwise stop and ask, in one line: "*<their word>* is a valid synonym of
+     *<native word>*. Should I mark it as correct? (yes / no)". Wait for the
+     answer, then remember it and rate (`yes` = `good`, `no` = `again`):
+
+     ```bash
+     PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe vocab-synonym --card-id "<id>" --word "<their word>" --verdict "<accept|reject>"
+     ```
+4. Apply the rating:
 
    ```bash
    PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe vocab-review --card-id "<id>" --rating "<again|hard|good|easy>"
    ```
 
 5. Tell the learner whether they were right, show the correct form if they
-   weren't, and move to the next card. Don't editorialize about the FSRS
-   internals (stability/difficulty numbers) unless they ask. Whenever the
-   learner answers a card incorrectly, also show a correct example
-   sentence using the target word before moving to the next card.
+   weren't, and show **three example sentences** for the card (below). Then
+   move to the next card. Don't editorialize about the FSRS internals
+   (stability/difficulty numbers) unless they ask.
+
+### Example sentences (after the answer, never before)
+
+Every card shows three examples: each one a sentence in the target language
+with its translation in the language of the card's native word. If
+`examples` from `vocab-reveal` is not empty, show those. Otherwise write
+three and save them, so the same ones come back at every review (quoted
+heredoc, JSON on stdin):
+
+```bash
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/scripts" python3 -m nachhilfe vocab-examples --card-id "<id>" <<'JSON'
+[
+  {"target": "Ich habe eine Beschwerde eingereicht.", "native": "I filed a complaint."},
+  {"target": "Die Beschwerde wurde abgelehnt.", "native": "The complaint was rejected."},
+  {"target": "Er schreibt eine Beschwerde an den Vermieter.", "native": "He writes a complaint to the landlord."}
+]
+JSON
+```
+
+- Use the card's word in the form the card teaches (nouns with their article
+  and the plural in at least one sentence; verbs with `sich` and the
+  preposition if they have them).
+- Three different situations, natural everyday or work German at the card's
+  level, one clause each where possible.
+- If the plugin rejects the examples, fix what it names and send all three
+  again. If the learner says the examples are poor, rewrite them with
+  `--replace`.
+- Show them as a short list: the German sentence, the translation below it.
+  Skip them only if the learner asks to go faster.
 
 ## 5. Retry round (cards rated again or hard)
 
@@ -107,8 +152,9 @@ After each answer:
 
 1. Reveal the answer with `vocab-reveal`, judge it by the same standard as
    before (right word, article/plural for nouns, `sich` and preposition for
-   verbs), and give one line of feedback. Show a correct example sentence
-   only if they got it wrong again.
+   verbs; a synonym follows the saved decisions, and an undecided one is asked
+   about, as in step 3), and give one line of feedback. Don't repeat the three
+   examples here; show one of the saved ones only if they got it wrong again.
 2. Record the outcome:
 
    ```bash
